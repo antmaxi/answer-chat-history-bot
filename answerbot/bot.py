@@ -1,0 +1,177 @@
+"""The Telegram bot: aiogram wrapper around retrieve + answer, plus live ingest.
+
+Group behaviour: replies only when @mentioned or when someone replies to one of
+its own messages, so it stays quiet otherwise. Requires privacy mode OFF in
+BotFather, or it receives no group messages to index at all.
+
+DM behaviour: any plain message is treated as a question. Access is gated on the
+sender being a member of at least one chat the bot has indexed.
+"""
+
+import asyncio
+import logging
+import re
+
+from aiogram import Bot, Dispatcher, F, html
+from aiogram.enums import ChatType
+from aiogram.filters import Command
+from aiogram.types import Message
+
+from . import answer, config, db
+from .ingest import live
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("answerbot")
+
+dp = Dispatcher()
+conn = db.connect()
+
+
+def format_answer(result: answer.Answer) -> str:
+    # Quote first (brackets survive escaping), then turn each [W#] into a link to
+    # the relevant messages, so the citations in the answer are clickable.
+    body = html.quote(result.text)
+
+    def linkify(m: "re.Match") -> str:
+        i = int(m.group(1))
+        if 1 <= i <= len(result.hits):
+            return f'<a href="{result.hits[i - 1].link()}">[W{i}]</a>'
+        return m.group(0)
+
+    body = answer.CITATION.sub(linkify, body)
+
+    pairs = result.source_links()
+    if pairs:
+        lines = "\n".join(
+            f'<a href="{h.link()}">[W{i}]</a> {html.quote(h.when())} · {html.quote(h.speakers)}'
+            for i, h in pairs
+        )
+        body += "\n\n<b>Sources</b>\n" + lines
+    return body
+
+
+async def indexed_chats() -> set[int]:
+    return {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")}
+
+
+async def is_member_of_indexed_chat(bot: Bot, user_id: int) -> bool:
+    """DM access control: is this user in any chat we've indexed?"""
+    for chat_id in await indexed_chats():
+        try:
+            member = await bot.get_chat_member(chat_id, user_id)
+            if member.status not in ("left", "kicked"):
+                return True
+        except Exception:
+            continue  # bot may not be an admin there, or the chat is gone
+    return False
+
+
+async def respond(message: Message, question: str, chat_id: int | None) -> None:
+    if not question.strip():
+        await message.reply("Ask me a question about this chat's history.")
+        return
+    thinking = await message.reply("…")
+    try:
+        result = await asyncio.to_thread(answer.answer, conn, question, chat_id)
+        await thinking.edit_text(format_answer(result), parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:
+        log.exception("failed to answer")
+        await thinking.edit_text("Something went wrong answering that.")
+
+
+# --- Commands -------------------------------------------------------------
+
+@dp.message(Command("start", "help"))
+async def cmd_help(message: Message) -> None:
+    await message.reply(
+        "I answer questions from this chat's history.\n"
+        "In a group, @mention me or reply to my messages. In DM, just ask.\n"
+        "Commands: /ask <question>, /stats"
+    )
+
+
+@dp.message(Command("ask"))
+async def cmd_ask(message: Message, command) -> None:
+    chat_id = message.chat.id if message.chat.type != ChatType.PRIVATE else None
+    await respond(message, command.args or "", chat_id)
+
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message) -> None:
+    s = db.stats(conn)
+    await message.reply(
+        f"messages: {s['messages']}\nwindows: {s['windows']}\n"
+        f"embedded: {s['embedded']}\nchats: {s['chats']}"
+    )
+
+
+@dp.message(Command("reindex"))
+async def cmd_reindex(message: Message) -> None:
+    if message.from_user.id not in config.ADMIN_USER_IDS:
+        await message.reply("Admins only.")
+        return
+    from .index import reindex
+
+    await message.reply("Reindexing…")
+    result = await asyncio.to_thread(reindex, conn, None, False)
+    await message.reply(f"Done: {result['windows']} windows across {result['chats']} chat(s).")
+
+
+# --- Group messages -------------------------------------------------------
+
+async def _mentions_bot(message: Message, bot: Bot) -> bool:
+    me = await bot.me()
+    if message.reply_to_message and message.reply_to_message.from_user.id == me.id:
+        return True
+    text = message.text or message.caption or ""
+    return f"@{me.username}".lower() in text.lower()
+
+
+@dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
+async def on_group_message(message: Message, bot: Bot) -> None:
+    text = message.text or message.caption
+    if not text:
+        return
+
+    # Always ingest, so history keeps growing whether or not we're addressed.
+    live.add_message(
+        conn,
+        chat_id=message.chat.id,
+        msg_id=message.message_id,
+        sender=message.from_user.full_name if message.from_user else "Unknown",
+        sender_id=message.from_user.id if message.from_user else None,
+        ts=int(message.date.timestamp()),
+        text=text,
+        reply_to=message.reply_to_message.message_id if message.reply_to_message else None,
+    )
+    await asyncio.to_thread(live.maybe_reindex, conn, message.chat.id)
+
+    if await _mentions_bot(message, bot):
+        me = await bot.me()
+        question = text.replace(f"@{me.username}", "").strip()
+        await respond(message, question, message.chat.id)
+
+
+# --- Direct messages ------------------------------------------------------
+
+@dp.message(F.chat.type == ChatType.PRIVATE)
+async def on_private_message(message: Message, bot: Bot) -> None:
+    if not message.text:
+        return
+    if not await is_member_of_indexed_chat(bot, message.from_user.id):
+        await message.reply("You need to be a member of a chat I've indexed to ask me things.")
+        return
+    # DM searches across every chat the user could see. Single-chat for now.
+    await respond(message, message.text, None)
+
+
+async def main() -> None:
+    if not config.TELEGRAM_BOT_TOKEN:
+        raise SystemExit("set TELEGRAM_BOT_TOKEN (see .env.example)")
+    bot = Bot(config.TELEGRAM_BOT_TOKEN)
+    log.info("starting polling")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

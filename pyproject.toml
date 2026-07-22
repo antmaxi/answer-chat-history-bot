@@ -1,0 +1,22 @@
+[project]
+name = "answerbot"
+version = "0.1.0"
+description = "Telegram bot that answers questions from a chat's own message history"
+requires-python = ">=3.11"
+dependencies = [
+    "sentence-transformers>=3.0",
+    "numpy>=1.26",
+    "anthropic>=0.40",
+    "python-dotenv>=1.0",
+    "aiogram>=3.13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["answerbot*"]
