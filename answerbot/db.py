@@ -61,9 +61,14 @@ CREATE TABLE IF NOT EXISTS state (
 """
 
 
-def connect(path: Path | str | None = None) -> sqlite3.Connection:
-    """Open the database, creating the schema if it isn't there yet."""
-    conn = sqlite3.connect(path or config.DB_PATH)
+def connect(path: Path | str | None = None, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open the database, creating the schema if it isn't there yet.
+
+    The bot runs DB work in a thread pool (via asyncio.to_thread), so it opens
+    with check_same_thread=False and serializes access with its own lock — see
+    bot.py. Single-threaded callers (the CLIs) keep the default guard.
+    """
+    conn = sqlite3.connect(path or config.DB_PATH, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

@@ -11,6 +11,7 @@ sender being a member of at least one chat the bot has indexed.
 import asyncio
 import logging
 import re
+import threading
 
 from aiogram import Bot, Dispatcher, F, html
 from aiogram.enums import ChatType
@@ -24,7 +25,19 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("answerbot")
 
 dp = Dispatcher()
-conn = db.connect()
+# One shared connection, used from worker threads (asyncio.to_thread), so it's
+# opened without the same-thread guard and every access is serialized by a lock.
+conn = db.connect(check_same_thread=False)
+_db_lock = threading.Lock()
+
+
+async def _db(fn, *args):
+    """Run a blocking DB call off the event loop, one at a time."""
+    def locked():
+        with _db_lock:
+            return fn(*args)
+
+    return await asyncio.to_thread(locked)
 
 
 def format_answer(result: answer.Answer) -> str:
@@ -51,7 +64,9 @@ def format_answer(result: answer.Answer) -> str:
 
 
 async def indexed_chats() -> set[int]:
-    return {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")}
+    return await _db(
+        lambda: {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")}
+    )
 
 
 async def is_member_of_indexed_chat(bot: Bot, user_id: int) -> bool:
@@ -72,7 +87,7 @@ async def respond(message: Message, question: str, chat_id: int | None) -> None:
         return
     thinking = await message.reply("…")
     try:
-        result = await asyncio.to_thread(answer.answer, conn, question, chat_id)
+        result = await _db(answer.answer, conn, question, chat_id)
         await thinking.edit_text(format_answer(result), parse_mode="HTML", disable_web_page_preview=True)
     except Exception:
         log.exception("failed to answer")
@@ -98,7 +113,7 @@ async def cmd_ask(message: Message, command) -> None:
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message) -> None:
-    s = db.stats(conn)
+    s = await _db(db.stats, conn)
     await message.reply(
         f"messages: {s['messages']}\nwindows: {s['windows']}\n"
         f"embedded: {s['embedded']}\nchats: {s['chats']}"
@@ -113,7 +128,7 @@ async def cmd_reindex(message: Message) -> None:
     from .index import reindex
 
     await message.reply("Reindexing…")
-    result = await asyncio.to_thread(reindex, conn, None, False)
+    result = await _db(reindex, conn, None, False)
     await message.reply(f"Done: {result['windows']} windows across {result['chats']} chat(s).")
 
 
@@ -134,17 +149,18 @@ async def on_group_message(message: Message, bot: Bot) -> None:
         return
 
     # Always ingest, so history keeps growing whether or not we're addressed.
-    live.add_message(
+    await _db(
+        live.add_message,
         conn,
-        chat_id=message.chat.id,
-        msg_id=message.message_id,
-        sender=message.from_user.full_name if message.from_user else "Unknown",
-        sender_id=message.from_user.id if message.from_user else None,
-        ts=int(message.date.timestamp()),
-        text=text,
-        reply_to=message.reply_to_message.message_id if message.reply_to_message else None,
+        message.chat.id,
+        message.message_id,
+        message.from_user.full_name if message.from_user else "Unknown",
+        message.from_user.id if message.from_user else None,
+        int(message.date.timestamp()),
+        text,
+        message.reply_to_message.message_id if message.reply_to_message else None,
     )
-    await asyncio.to_thread(live.maybe_reindex, conn, message.chat.id)
+    await _db(live.maybe_reindex, conn, message.chat.id)
 
     if await _mentions_bot(message, bot):
         me = await bot.me()
