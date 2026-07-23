@@ -58,6 +58,16 @@ class Answer:
             for i, h in self.source_links(limit)
         )
 
+    def primary_source(self) -> retrieve.Hit | None:
+        """The single most relevant window backing the answer (top cited, else top hit)."""
+        pairs = self.source_links(limit=1)
+        return pairs[0][1] if pairs else None
+
+    def primary_link(self) -> str | None:
+        """Deep link to the first message the answer is grounded in."""
+        hit = self.primary_source()
+        return hit.link() if hit else None
+
 
 def build_context(hits: list[retrieve.Hit]) -> str:
     blocks = []
@@ -96,6 +106,9 @@ def main() -> None:
     conn = db.connect()
     result = answer(conn, " ".join(args.question), args.chat_id)
     print(result.text)
+    link = result.primary_link()
+    if link:
+        print(f"\nFirst message: {link}")
     sources = result.sources_block()
     if sources:
         print("\nSources:")

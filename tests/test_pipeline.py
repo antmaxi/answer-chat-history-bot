@@ -189,6 +189,16 @@ class TestAnswerCitations:
         for _, h in a.source_links():
             assert h.link().startswith("https://t.me/c/")
 
+    def test_primary_link_is_first_message_of_top_source(self):
+        # cited: primary is the top cited window's first message
+        a = Answer("see [W2] and [W3]", [hit(1), hit(2), hit(3)])
+        assert a.primary_link() == hit(2).link()  # W2 is the first cited
+        # uncited: falls back to the top retrieved window
+        b = Answer("no citations here", [hit(5), hit(6)])
+        assert b.primary_link() == hit(5).link()
+        # nothing retrieved: no link
+        assert Answer("I couldn't find that.", []).primary_link() is None
+
 
 class TestLiveIngest:
     def test_pending_counts_from_watermark(self, conn):

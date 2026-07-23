@@ -53,6 +53,11 @@ def format_answer(result: answer.Answer) -> str:
 
     body = answer.CITATION.sub(linkify, body)
 
+    # A direct jump to the first message the answer is grounded in.
+    link = result.primary_link()
+    if link:
+        body += f'\n\n➡️ <a href="{link}">Go to the first message</a>'
+
     pairs = result.source_links()
     if pairs:
         lines = "\n".join(
