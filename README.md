@@ -28,8 +28,25 @@ python -m answerbot.answer "how much was the ski trip"  # grounded answer + sour
 `search` takes `-k N` for the number of results and `--full` to print whole
 windows instead of excerpts. `answer` needs `ANTHROPIC_API_KEY` set.
 
-Re-running the export loader is safe — messages are upserted on
-`(chat_id, msg_id)`. `index` rebuilds windows from scratch each time.
+### Topping up with new history
+
+When you re-export the chat later (or otherwise add messages), don't rebuild
+from scratch — re-embedding the whole corpus costs minutes. Load the newer
+export and index only what changed:
+
+```bash
+python -m answerbot.ingest.export path/to/newer-export.json  # upserts messages
+python -m answerbot.index --update                           # embeds only the new tail
+```
+
+`--update` re-windows and re-embeds just the messages past the last watermark
+(seconds), and leaves the rest untouched. `python -m answerbot.index` without a
+flag still does a full rebuild — use that only after changing the windowing or
+embedding settings. Re-running the export loader is always safe; messages are
+upserted on `(chat_id, msg_id)`.
+
+The bot does this automatically for live messages (see below), so `--update` is
+mainly for bulk top-ups from a fresh export.
 
 ## Running the bot
 

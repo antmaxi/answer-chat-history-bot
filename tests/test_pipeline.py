@@ -6,9 +6,10 @@ Retrieval quality is checked by hand with `python -m answerbot.search`.
 
 import sqlite3
 
+import numpy as np
 import pytest
 
-from answerbot import config, db
+from answerbot import config, db, index
 from answerbot.answer import Answer
 from answerbot.index import build_windows
 from answerbot.ingest import live
@@ -23,8 +24,49 @@ def conn():
     c.close()
 
 
+@pytest.fixture
+def fake_embed(monkeypatch):
+    """Skip the real model: record what gets embedded, return dummy vectors."""
+    calls: list[list[str]] = []
+
+    def fake(texts, batch_size=64, progress=False):
+        calls.append(list(texts))
+        return np.zeros((len(texts), config.EMBED_DIM), dtype=np.float32)
+
+    monkeypatch.setattr("answerbot.embed.encode_passages", fake)
+    return calls
+
+
 def msg(msg_id: int, ts: int, text: str = "hi", reply_to=None, sender="Anna") -> sqlite3.Row:
     return {"msg_id": msg_id, "ts": ts, "text": text, "reply_to": reply_to, "sender": sender}
+
+
+def seed(conn, specs, chat_id=1):
+    """specs: list of (msg_id, ts, text). Inserts into messages (FTS via trigger)."""
+    conn.executemany(
+        "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (?, ?, ?, 'A', ?)",
+        [(chat_id, mid, ts, text) for mid, ts, text in specs],
+    )
+    conn.commit()
+
+
+def boundaries(conn, chat_id=1):
+    return [
+        (r["first_msg"], r["last_msg"])
+        for r in conn.execute(
+            "SELECT first_msg, last_msg FROM windows WHERE chat_id=? ORDER BY first_msg",
+            (chat_id,),
+        )
+    ]
+
+
+# A message stream that forces several windows: a big gap after msg 12, then a
+# long run that trips the size split. Deterministic, so full and incremental
+# indexing must agree on the boundaries.
+STREAM = (
+    [(i, i, f"m{i}") for i in range(1, 13)]
+    + [(i, i + config.WINDOW_GAP_SECONDS + 1000, f"m{i}") for i in range(13, 45)]
+)
 
 
 class TestExportParsing:
@@ -178,6 +220,77 @@ class TestLiveIngest:
         rows = conn.execute("SELECT text FROM messages WHERE chat_id=1 AND msg_id=1").fetchall()
         assert len(rows) == 1
         assert rows[0]["text"] == "edited"
+
+
+class TestIncrementalIndex:
+    def test_update_matches_full_reindex(self, fake_embed):
+        """Indexing in two passes must yield the same windows as one full pass.
+
+        This is the property that makes the incremental path safe to rely on.
+        """
+        half = len(STREAM) // 2
+
+        inc = db.connect(":memory:")
+        seed(inc, STREAM[:half])
+        index.reindex(inc, progress=False)
+        seed(inc, STREAM[half:])
+        index.update(inc)
+
+        full = db.connect(":memory:")
+        seed(full, STREAM)
+        index.reindex(full, progress=False)
+
+        assert boundaries(inc) == boundaries(full)
+        assert boundaries(inc)  # sanity: there actually are multiple windows
+        assert len(boundaries(inc)) > 1
+
+    def test_update_only_embeds_the_tail(self, conn, fake_embed):
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+        total_windows = len(boundaries(conn))
+        fake_embed.clear()
+
+        # three new messages arrive contiguously after the last one
+        last_ts = STREAM[-1][1]
+        seed(conn, [(100 + i, last_ts + 1 + i, f"new{i}") for i in range(3)])
+        index.update(conn)
+
+        # exactly one embed call, covering only the reopened tail — far fewer
+        # texts than the whole corpus of windows.
+        assert len(fake_embed) == 1
+        assert len(fake_embed[0]) < total_windows
+
+    def test_update_is_noop_when_nothing_new(self, conn, fake_embed):
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+        fake_embed.clear()
+
+        result = index.update(conn)
+        assert result["windows"] == 0
+        assert result["chats"] == 0
+        assert fake_embed == []  # nothing re-embedded
+
+    def test_update_advances_watermark_and_is_searchable(self, conn, fake_embed):
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+
+        seed(conn, [(200, STREAM[-1][1] + 5, "pangolin sighting")])
+        index.update(conn)
+
+        wm = conn.execute("SELECT last_indexed_msg_id FROM state WHERE chat_id=1").fetchone()[0]
+        assert wm == 200
+        # the new message made it into a window
+        got = conn.execute(
+            "SELECT count(*) FROM windows WHERE chat_id=1 AND last_msg>=200"
+        ).fetchone()[0]
+        assert got == 1
+
+    def test_update_indexes_a_never_indexed_chat(self, conn, fake_embed):
+        """update on a fresh chat falls back to a full index."""
+        seed(conn, STREAM)
+        result = index.update(conn)
+        assert result["windows"] == len(boundaries(conn))
+        assert len(fake_embed) == 1  # embedded everything, once
 
 
 def test_fts_index_stays_in_sync(conn):
