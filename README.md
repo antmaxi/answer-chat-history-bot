@@ -39,14 +39,24 @@ python -m answerbot.ingest.export path/to/newer-export.json  # upserts messages
 python -m answerbot.index --update                           # embeds only the new tail
 ```
 
-`--update` re-windows and re-embeds just the messages past the last watermark
-(seconds), and leaves the rest untouched. `python -m answerbot.index` without a
-flag still does a full rebuild — use that only after changing the windowing or
-embedding settings. Re-running the export loader is always safe; messages are
-upserted on `(chat_id, msg_id)`.
+`--update` re-windows and re-embeds the new tail **plus the last couple of
+weeks** of history (`--lookback-days`, default 14), leaving the rest untouched —
+seconds, not the minutes a full rebuild costs. The lookback is what catches
+*edits* to recent messages, which a pure-tail update would never revisit; older
+edits still need a periodic full `index` to reconcile. Use `--lookback-days 0`
+for tail-only, or a larger value to reach further back:
 
-The bot does this automatically for live messages (see below), so `--update` is
-mainly for bulk top-ups from a fresh export.
+```bash
+python -m answerbot.index --update                    # tail + last 14 days
+python -m answerbot.index --update --lookback-days 30  # reach back a month
+```
+
+`python -m answerbot.index` without a flag does a full rebuild — use that only
+after changing the windowing or embedding settings. Re-running the export loader
+is always safe; messages are upserted on `(chat_id, msg_id)`.
+
+The bot re-windows live messages automatically (tail-only, for speed — see
+below), so `--update` is mainly for bulk top-ups from a fresh export.
 
 ## Running the bot
 

@@ -146,13 +146,40 @@ def reindex(conn: sqlite3.Connection, chat_id: int | None = None, progress: bool
     return {"chats": len(chat_ids), "windows": total}
 
 
-def update(conn: sqlite3.Connection, chat_id: int | None = None, progress: bool = False) -> dict:
-    """Incrementally index only what arrived since the last pass.
+def _lookback_boundary(conn: sqlite3.Connection, chat_id: int, days: int) -> int | None:
+    """First message of the earliest window ending within the last `days`.
 
-    Cheap to call repeatedly: it re-windows and re-embeds just the tail, leaving
-    the bulk of the corpus untouched. Run this after topping up from a fresh
-    export, or when live messages have accumulated. Safe on a never-indexed
-    chat, where it falls back to a full index.
+    "Now" is the chat's newest message, not wall-clock, so a historical import
+    reindexes the tail of its own timeline rather than nothing. Returns None when
+    no window falls in the window (e.g. chat quiet longer than `days`)."""
+    latest = conn.execute(
+        "SELECT max(ts) FROM messages WHERE chat_id=?", (chat_id,)
+    ).fetchone()[0]
+    if latest is None:
+        return None
+    cutoff = latest - days * 86400
+    return conn.execute(
+        "SELECT min(first_msg) FROM windows WHERE chat_id=? AND ts_end>=?", (chat_id, cutoff)
+    ).fetchone()[0]
+
+
+def update(
+    conn: sqlite3.Connection,
+    chat_id: int | None = None,
+    lookback_days: int = 0,
+    progress: bool = False,
+) -> dict:
+    """Incrementally index only what changed near the tail.
+
+    Re-windows and re-embeds the open tail (new messages since the last pass),
+    plus — when `lookback_days` > 0 — every window from the last `lookback_days`
+    of the timeline, so recent edits are refreshed. The bulk of the corpus is
+    left untouched, so this stays cheap. Safe on a never-indexed chat, where it
+    falls back to a full index.
+
+    `lookback_days=0` (the default, used by live ingest) is pure tail and runs
+    only when new messages exist. A positive lookback also runs when only edits,
+    not new messages, are pending.
     """
     total_windows = 0
     touched = 0
@@ -161,9 +188,16 @@ def update(conn: sqlite3.Connection, chat_id: int | None = None, progress: bool 
             "SELECT count(*) FROM messages WHERE chat_id=? AND msg_id>?",
             (cid, _watermark(conn, cid)),
         ).fetchone()[0]
-        if not new:
+        if not new and not lookback_days:
             continue
-        total_windows += _index_from(conn, cid, _rebuild_boundary(conn, cid), progress)
+
+        boundary = _rebuild_boundary(conn, cid)
+        if lookback_days:
+            lb = _lookback_boundary(conn, cid, lookback_days)
+            if lb is not None:
+                boundary = min(boundary, lb)
+
+        total_windows += _index_from(conn, cid, boundary, progress)
         touched += 1
     return {"chats": touched, "windows": total_windows}
 
@@ -176,14 +210,24 @@ def main() -> None:
     ap.add_argument(
         "--update",
         action="store_true",
-        help="incremental: index only messages new since the last run (fast)",
+        help="incremental: index the new tail plus the last few weeks (fast)",
+    )
+    ap.add_argument(
+        "--lookback-days",
+        type=int,
+        default=config.UPDATE_LOOKBACK_DAYS,
+        help="with --update, also re-window this many recent days to catch edits "
+        f"(default {config.UPDATE_LOOKBACK_DAYS}; 0 = tail only)",
     )
     args = ap.parse_args()
 
     conn = db.connect()
-    fn = update if args.update else reindex
-    result = fn(conn, args.chat_id, progress=True)
-    verb = "updated" if args.update else "indexed"
+    if args.update:
+        result = update(conn, args.chat_id, lookback_days=args.lookback_days, progress=True)
+        verb = "updated"
+    else:
+        result = reindex(conn, args.chat_id, progress=True)
+        verb = "indexed"
     print(f"{verb} {result['windows']} windows across {result['chats']} chat(s)")
     print(db.stats(conn))
 

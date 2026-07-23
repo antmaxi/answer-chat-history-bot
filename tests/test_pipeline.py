@@ -292,6 +292,52 @@ class TestIncrementalIndex:
         assert result["windows"] == len(boundaries(conn))
         assert len(fake_embed) == 1  # embedded everything, once
 
+    def _window_text_for(self, conn, msg_id):
+        return conn.execute(
+            "SELECT text FROM windows WHERE chat_id=1 AND first_msg<=? AND last_msg>=?",
+            (msg_id, msg_id),
+        ).fetchone()["text"]
+
+    def test_pure_tail_update_misses_an_old_edit(self, conn, fake_embed):
+        """Baseline: without lookback, an edit to a non-tail message is not refreshed."""
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+
+        conn.execute("UPDATE messages SET text='EDITED' WHERE chat_id=1 AND msg_id=20")
+        conn.commit()  # STREAM has no msg beyond 44, so nothing new to trigger a tail rebuild
+        index.update(conn)  # lookback_days=0
+
+        assert "EDITED" not in self._window_text_for(conn, 20)  # window still stale
+
+    def test_lookback_refreshes_a_recent_edit(self, conn, fake_embed):
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+        fake_embed.clear()
+
+        conn.execute("UPDATE messages SET text='EDITED' WHERE chat_id=1 AND msg_id=20")
+        conn.commit()
+        # STREAM spans well under a day, so any positive lookback covers msg 20.
+        result = index.update(conn, lookback_days=1)
+
+        assert "EDITED" in self._window_text_for(conn, 20)  # window rebuilt
+        assert result["windows"] > 0
+        assert len(fake_embed) == 1  # the refreshed windows were re-embedded
+
+    def test_lookback_leaves_older_history_untouched(self, conn, fake_embed):
+        """Lookback rebuilds only recent windows, not the whole corpus."""
+        # One message per day for 40 days: 40 daily windows (a day > the gap).
+        day_stream = [(i, i * 86400, f"day{i}") for i in range(1, 41)]
+        seed(conn, day_stream)
+        index.reindex(conn, progress=False)
+        total = len(boundaries(conn))
+        assert total == 40
+        fake_embed.clear()
+
+        index.update(conn, lookback_days=5)  # only the last ~5 days
+        assert fake_embed, "expected some re-embedding"
+        assert len(fake_embed[0]) <= 6  # ~5 recent windows, far fewer than 40
+        assert len(fake_embed[0]) < total
+
 
 def test_fts_index_stays_in_sync(conn):
     """The triggers, not the app, are responsible for keeping FTS current."""

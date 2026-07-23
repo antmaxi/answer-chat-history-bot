@@ -19,6 +19,11 @@ WINDOW_MAX_MSGS = int(os.getenv("WINDOW_MAX_MSGS", "25"))
 WINDOW_MAX_CHARS = int(os.getenv("WINDOW_MAX_CHARS", "1500"))
 WINDOW_OVERLAP = int(os.getenv("WINDOW_OVERLAP", "2"))
 
+# How far back a manual `index --update` re-windows, on top of the open tail, so
+# recent edits get picked up. Recent messages are the ones most likely to be
+# edited; older ones only drift if reconciled by a full reindex. 0 = tail only.
+UPDATE_LOOKBACK_DAYS = int(os.getenv("UPDATE_LOOKBACK_DAYS", "14"))
+
 # Retrieval
 TOP_K = int(os.getenv("TOP_K", "8"))
 # RRF_K flattens score differences; 60 is the paper's default and suits large
