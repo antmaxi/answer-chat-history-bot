@@ -67,16 +67,49 @@ def resolve(names: dict[int, str], sender_id: int | None, fallback: str) -> str:
     return fallback
 
 
+def ensure_aliases(conn: sqlite3.Connection, sender_ids) -> None:
+    """Assign a persistent ordinal to any sender that lacks one.
+
+    Ordinals are handed out in ascending id order and never reused, so a given
+    person keeps the same "User N" across reindexes without that N revealing
+    their telegram id."""
+    ids = {s for s in sender_ids if s is not None}
+    if not ids:
+        return
+    have = {r[0] for r in conn.execute("SELECT sender_id FROM aliases")}
+    missing = sorted(ids - have)
+    if not missing:
+        return
+    start = conn.execute("SELECT COALESCE(MAX(ordinal), 0) FROM aliases").fetchone()[0] + 1
+    conn.executemany(
+        "INSERT OR IGNORE INTO aliases (sender_id, ordinal) VALUES (?, ?)",
+        [(sid, start + i) for i, sid in enumerate(missing)],
+    )
+    conn.commit()
+
+
+def alias_map(conn: sqlite3.Connection) -> dict[int, int]:
+    return {r["sender_id"]: r["ordinal"] for r in conn.execute("SELECT sender_id, ordinal FROM aliases")}
+
+
 def speaker_label(
-    names: dict[int, str], sender_id: int | None, fallback: str, mode: str | None = None
+    names: dict[int, str],
+    sender_id: int | None,
+    fallback: str,
+    mode: str | None = None,
+    aliases: dict[int, int] | None = None,
 ) -> str:
     """How a speaker is shown, honouring SPEAKER_LABEL.
 
     In "id" mode nobody's name appears at all — not resolved names, not export
-    labels — only a stable anonymous handle derived from the telegram user id.
+    labels — only a stable anonymous "User N" from the aliases table (assigned by
+    ensure_aliases), so the label never exposes the real telegram id.
     """
     if (mode or config.SPEAKER_LABEL) == "id":
-        return f"User {sender_id}" if sender_id is not None else "User unknown"
+        if sender_id is None:
+            return "User unknown"
+        ordinal = (aliases or {}).get(sender_id)
+        return f"User {ordinal}" if ordinal is not None else f"User #{sender_id}"
     return resolve(names, sender_id, fallback)
 
 

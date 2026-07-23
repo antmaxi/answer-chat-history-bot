@@ -95,10 +95,11 @@ export labels suppressed everywhere — set `SPEAKER_LABEL=id`:
 SPEAKER_LABEL=id python -m answerbot.index          # or: python -m answerbot.index --speaker-label id
 ```
 
-Speakers then render as `User <telegram id>` (stable, so threads and "who said
-what" still hold together) with no name attached. Set it in `.env` so the bot
-uses it too. Caveat: this anonymizes the *speaker label* only — message **text**
-can still contain names or `@mentions` that people typed, which are left as-is.
+Speakers then render as `User N`, a stable sequential pseudonym (stored in the
+`aliases` table, assigned once) — so threads and "who said what" still hold
+together, without exposing anyone's real telegram id. Set it in `.env` so the
+bot uses it too. Caveat: this anonymizes the *speaker label* only — message
+**text** can still contain names or `@mentions` that people typed, left as-is.
 
 ## Running the bot
 

@@ -11,18 +11,23 @@ from datetime import datetime, timezone
 from . import config, db, embed, people
 
 
-def render(msgs: list[sqlite3.Row], names: dict[int, str] | None = None, mode: str | None = None) -> str:
+def render(
+    msgs: list[sqlite3.Row],
+    names: dict[int, str] | None = None,
+    mode: str | None = None,
+    aliases: dict[int, int] | None = None,
+) -> str:
     """Render a window as a plain transcript, which is what gets embedded.
 
     `names` resolves the export's private contact labels to real display names by
     sender id; anyone unresolved keeps their stored label. Under SPEAKER_LABEL=id
-    (or mode="id") names are dropped entirely for anonymous ids.
+    (or mode="id") names are dropped for the stable anonymous ids in `aliases`.
     """
     names = names or {}
     lines = []
     for m in msgs:
         stamp = datetime.fromtimestamp(m["ts"], timezone.utc).strftime("%Y-%m-%d %H:%M")
-        who = people.speaker_label(names, m["sender_id"], m["sender"], mode)
+        who = people.speaker_label(names, m["sender_id"], m["sender"], mode, aliases)
         lines.append(f"[{stamp}] {who}: {m['text']}")
     return "\n".join(lines)
 
@@ -108,12 +113,17 @@ def _index_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int, progre
         return 0
 
     names = people.name_map(conn)
+    people.ensure_aliases(conn, (m["sender_id"] for m in msgs))
+    aliases = people.alias_map(conn)
     rows = []
     for g in build_windows(msgs):
-        speakers = sorted({people.speaker_label(names, m["sender_id"], m["sender"]) for m in g if m["sender"]})
+        speakers = sorted(
+            {people.speaker_label(names, m["sender_id"], m["sender"], aliases=aliases)
+             for m in g if m["sender"]}
+        )
         rows.append(
             (chat_id, g[0]["msg_id"], g[-1]["msg_id"], g[0]["ts"], g[-1]["ts"],
-             ", ".join(speakers), render(g, names))
+             ", ".join(speakers), render(g, names, aliases=aliases))
         )
     conn.executemany(
         """INSERT INTO windows (chat_id, first_msg, last_msg, ts_start, ts_end, speakers, text)

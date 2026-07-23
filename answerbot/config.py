@@ -26,7 +26,7 @@ UPDATE_LOOKBACK_DAYS = int(os.getenv("UPDATE_LOOKBACK_DAYS", "14"))
 
 # How speakers are labelled in windows and answers:
 #   "name"  resolved real name, falling back to the export label (default)
-#   "id"    anonymous "User <telegram id>" — no names appear anywhere
+#   "id"    stable anonymous "User N" (see aliases table) — no names, no real id
 SPEAKER_LABEL = os.getenv("SPEAKER_LABEL", "name")
 
 # Retrieval

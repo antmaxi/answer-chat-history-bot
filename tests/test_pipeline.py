@@ -368,23 +368,35 @@ class TestPeopleNames:
         assert "Vutyan" not in out          # private label replaced
         assert "Unknown Label: yo" in out    # unresolved sender keeps its label
 
-    def test_id_mode_drops_all_names(self):
-        # even a resolved name is suppressed in id mode
-        assert people.speaker_label({7: "Victor"}, 7, "Label", mode="id") == "User 7"
+    def test_id_mode_uses_stable_alias_not_real_id(self):
+        # even a resolved name is suppressed, and the label is the ordinal, not the id
+        assert people.speaker_label({7: "Victor"}, 7, "Label", mode="id", aliases={7: 1}) == "User 1"
+        assert "7" not in people.speaker_label({}, 7, "Label", mode="id", aliases={7: 3})
         assert people.speaker_label({}, None, "Label", mode="id") == "User unknown"
 
     def test_name_mode_still_resolves(self):
         assert people.speaker_label({7: "Victor"}, 7, "Label", mode="name") == "Victor"
 
-    def test_render_id_mode_shows_no_names(self):
+    def test_ensure_aliases_is_stable(self, conn):
+        people.ensure_aliases(conn, [500, 100, 300])
+        first = people.alias_map(conn)
+        assert set(first.values()) == {1, 2, 3}       # sequential ordinals
+        assert set(first) == {500, 100, 300}
+        # a later batch keeps existing ordinals and only appends new ones
+        people.ensure_aliases(conn, [100, 999])
+        second = people.alias_map(conn)
+        assert second[100] == first[100]              # unchanged
+        assert second[999] == 4                        # next free ordinal
+
+    def test_render_id_mode_shows_no_names_or_real_ids(self):
         msgs = [
             {"ts": 0, "sender": "Vutyan нейроэкономика Витя", "sender_id": 7, "text": "hi"},
             {"ts": 1, "sender": "Some Label", "sender_id": 8, "text": "yo"},
         ]
-        out = render(msgs, names={7: "Victor"}, mode="id")
-        assert "User 7: hi" in out
-        assert "User 8: yo" in out
+        out = render(msgs, names={7: "Victor"}, mode="id", aliases={7: 1, 8: 2})
+        assert "User 1: hi" in out and "User 2: yo" in out
         assert "Victor" not in out and "Vutyan" not in out and "Some Label" not in out
+        assert "User 7" not in out and "User 8" not in out  # real ids never shown
 
     def test_reindex_id_mode(self, conn, monkeypatch):
         monkeypatch.setattr(config, "SPEAKER_LABEL", "id")
@@ -403,9 +415,9 @@ class TestPeopleNames:
         index.reindex(conn, progress=False)
 
         row = conn.execute("SELECT text, speakers FROM windows WHERE chat_id=1").fetchone()
-        assert "User 99" in row["text"]
+        assert row["speakers"] == "User 1"             # ordinal, not the id 99
+        assert "99" not in row["text"]                  # real id never leaks
         assert "Actual Person" not in row["text"] and "Private Label" not in row["text"]
-        assert row["speakers"] == "User 99"
 
     def test_load_mapping_counts_written(self, conn):
         n = people.load_mapping(conn, [

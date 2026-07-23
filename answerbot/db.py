@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS people (
   source       TEXT NOT NULL DEFAULT 'live',
   updated_at   INTEGER NOT NULL
 );
+
+-- Stable anonymous ordinals for SPEAKER_LABEL=id: a sequential "User N" that is
+-- assigned once and never changes, so it doesn't expose the real telegram id.
+CREATE TABLE IF NOT EXISTS aliases (
+  sender_id INTEGER PRIMARY KEY,
+  ordinal   INTEGER NOT NULL UNIQUE
+);
 """
 
 
