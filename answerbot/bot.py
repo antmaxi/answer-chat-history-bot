@@ -18,7 +18,7 @@ from aiogram.enums import ChatType
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from . import answer, config, db
+from . import answer, config, db, people
 from .ingest import live
 
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +63,11 @@ def format_answer(result: answer.Answer) -> str:
     return body
 
 
+def _record_person(sender_id, name, username, source="live") -> None:
+    people.record(conn, sender_id, name, username, source)
+    conn.commit()
+
+
 async def indexed_chats() -> set[int]:
     return await _db(
         lambda: {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")}
@@ -102,6 +107,7 @@ async def cmd_help(message: Message) -> None:
         "I answer questions from this chat's history.\n"
         "In a group, @mention me or reply to my messages. In DM, just ask.\n"
         "Commands: /ask <question>, /stats"
+        "\nAdmins: /reindex, /resolve (fix member names)"
     )
 
 
@@ -132,6 +138,46 @@ async def cmd_reindex(message: Message) -> None:
     await message.reply(f"Done: {result['windows']} windows across {result['chats']} chat(s).")
 
 
+@dp.message(Command("resolve"))
+async def cmd_resolve(message: Message, bot: Bot) -> None:
+    """Look up members' real names via the Bot API, replacing export labels.
+
+    Run inside the group whose members you want to resolve. Only people still in
+    the group can be looked up; anyone who left keeps their export label.
+    """
+    if message.from_user.id not in config.ADMIN_USER_IDS:
+        await message.reply("Admins only.")
+        return
+    if message.chat.type == ChatType.PRIVATE:
+        await message.reply("Run /resolve inside the group whose members to resolve.")
+        return
+
+    ids = await _db(
+        lambda: [
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT sender_id FROM messages WHERE chat_id=? AND sender_id IS NOT NULL",
+                (message.chat.id,),
+            )
+        ]
+    )
+    await message.reply(f"Resolving {len(ids)} people via the API — this can take a while…")
+
+    done = 0
+    for uid in ids:
+        try:
+            member = await bot.get_chat_member(message.chat.id, uid)
+            await _db(_record_person, uid, member.user.full_name, member.user.username, "api")
+            done += 1
+        except Exception:
+            continue  # user left the group, or the lookup was rejected
+        await asyncio.sleep(0.1)  # be gentle with rate limits
+
+    await message.reply(
+        f"Resolved {done}/{len(ids)} names. Run /reindex to rewrite history with them."
+    )
+
+
 # --- Group messages -------------------------------------------------------
 
 async def _mentions_bot(message: Message, bot: Bot) -> bool:
@@ -160,6 +206,11 @@ async def on_group_message(message: Message, bot: Bot) -> None:
         text,
         message.reply_to_message.message_id if message.reply_to_message else None,
     )
+    # The sender's own full name is their real public name — record it so it
+    # overrides any private export label on the next reindex.
+    if message.from_user:
+        u = message.from_user
+        await _db(_record_person, u.id, u.full_name, u.username)
     await _db(live.maybe_reindex, conn, message.chat.id)
 
     if await _mentions_bot(message, bot):

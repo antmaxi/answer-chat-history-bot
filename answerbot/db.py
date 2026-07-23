@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS state (
   chat_id             INTEGER PRIMARY KEY,
   last_indexed_msg_id INTEGER NOT NULL DEFAULT 0
 );
+
+-- Real display names keyed by the stable telegram user id, so the exporter's
+-- private contact labels (stored in messages.sender) can be overridden. Filled
+-- from live messages, an API backfill, or a manual mapping — see people.py.
+CREATE TABLE IF NOT EXISTS people (
+  sender_id    INTEGER PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  username     TEXT,
+  source       TEXT NOT NULL DEFAULT 'live',
+  updated_at   INTEGER NOT NULL
+);
 """
 
 

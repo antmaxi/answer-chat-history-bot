@@ -58,6 +58,34 @@ is always safe; messages are upserted on `(chat_id, msg_id)`.
 The bot re-windows live messages automatically (tail-only, for speed — see
 below), so `--update` is mainly for bulk top-ups from a fresh export.
 
+### Fixing people's names
+
+A Telegram export records each sender under the name the **exporting account**
+had saved for them — so contacts show up under that account's private labels,
+not their real public names, and those labels then end up in embeddings,
+prompts, and answers. The export itself has no public names, only a stable user
+id, so real names have to come from elsewhere. Three ways to supply them, keyed
+by that id:
+
+- **Automatic (live):** while the bot runs, every message carries the sender's
+  real public name, which is recorded and overrides the label on the next
+  reindex. Active members self-heal over time, for free.
+- **API backfill:** an admin runs `/resolve` inside the group; the bot looks up
+  each member via the Bot API. Only people *still in the group* can be resolved.
+- **Manual (fully local, no API):**
+
+  ```bash
+  python -m answerbot.people --template names.json   # dump everyone, busiest first
+  # edit the "name" fields in names.json
+  python -m answerbot.people --import names.json      # apply them
+  python -m answerbot.index                           # rewrite history with the names
+  ```
+
+`python -m answerbot.people --stats` shows how many are resolved. A name you set
+by hand is never overwritten by a live sighting. Names live in the window text,
+so changes take effect on the next (re)index — a full `index` to apply them
+everywhere, or `--update` for just the recent tail.
+
 ## Running the bot
 
 1. Create a bot with @BotFather and copy the token.

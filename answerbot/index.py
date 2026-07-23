@@ -8,15 +8,21 @@ individually retrieves noise.
 import sqlite3
 from datetime import datetime, timezone
 
-from . import config, db, embed
+from . import config, db, embed, people
 
 
-def render(msgs: list[sqlite3.Row]) -> str:
-    """Render a window as a plain transcript, which is what gets embedded."""
+def render(msgs: list[sqlite3.Row], names: dict[int, str] | None = None) -> str:
+    """Render a window as a plain transcript, which is what gets embedded.
+
+    `names` resolves the export's private contact labels to real display names
+    by sender id; anyone unresolved keeps their stored label.
+    """
+    names = names or {}
     lines = []
     for m in msgs:
         stamp = datetime.fromtimestamp(m["ts"], timezone.utc).strftime("%Y-%m-%d %H:%M")
-        lines.append(f"[{stamp}] {m['sender']}: {m['text']}")
+        who = people.resolve(names, m["sender_id"], m["sender"])
+        lines.append(f"[{stamp}] {who}: {m['text']}")
     return "\n".join(lines)
 
 
@@ -100,12 +106,13 @@ def _index_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int, progre
     if not msgs:
         return 0
 
+    names = people.name_map(conn)
     rows = []
     for g in build_windows(msgs):
-        speakers = sorted({m["sender"] for m in g if m["sender"]})
+        speakers = sorted({people.resolve(names, m["sender_id"], m["sender"]) for m in g if m["sender"]})
         rows.append(
             (chat_id, g[0]["msg_id"], g[-1]["msg_id"], g[0]["ts"], g[-1]["ts"],
-             ", ".join(speakers), render(g))
+             ", ".join(speakers), render(g, names))
         )
     conn.executemany(
         """INSERT INTO windows (chat_id, first_msg, last_msg, ts_start, ts_end, speakers, text)

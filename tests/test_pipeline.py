@@ -9,9 +9,9 @@ import sqlite3
 import numpy as np
 import pytest
 
-from answerbot import config, db, index
+from answerbot import config, db, index, people
 from answerbot.answer import Answer
-from answerbot.index import build_windows
+from answerbot.index import build_windows, render
 from answerbot.ingest import live
 from answerbot.ingest.export import flatten_text, parse_sender_id, parse_ts
 from answerbot.retrieve import Hit, fts_query
@@ -337,6 +337,68 @@ class TestIncrementalIndex:
         assert fake_embed, "expected some re-embedding"
         assert len(fake_embed[0]) <= 6  # ~5 recent windows, far fewer than 40
         assert len(fake_embed[0]) < total
+
+
+class TestPeopleNames:
+    def test_record_and_resolve(self, conn):
+        people.record(conn, 42, "Real Name", "realuser", "live")
+        conn.commit()
+        names = people.name_map(conn)
+        assert people.resolve(names, 42, "Private Label") == "Real Name"
+
+    def test_resolve_falls_back_to_export_label(self, conn):
+        assert people.resolve({}, 42, "Private Label") == "Private Label"
+        assert people.resolve({}, None, "Private Label") == "Private Label"
+
+    def test_more_trusted_source_wins_and_is_kept(self, conn):
+        people.record(conn, 1, "Live Name", None, "live")
+        people.record(conn, 1, "Manual Name", None, "manual")
+        assert people.name_map(conn)[1] == "Manual Name"
+        # a later live sighting must NOT clobber the hand-set name
+        assert people.record(conn, 1, "Live Again", None, "live") is False
+        assert people.name_map(conn)[1] == "Manual Name"
+
+    def test_render_uses_resolved_names(self):
+        msgs = [
+            {"ts": 0, "sender": "Vutyan нейроэкономика Витя", "sender_id": 7, "text": "hi"},
+            {"ts": 1, "sender": "Unknown Label", "sender_id": 8, "text": "yo"},
+        ]
+        out = render(msgs, names={7: "Victor"})
+        assert "Victor: hi" in out
+        assert "Vutyan" not in out          # private label replaced
+        assert "Unknown Label: yo" in out    # unresolved sender keeps its label
+
+    def test_load_mapping_counts_written(self, conn):
+        n = people.load_mapping(conn, [
+            {"sender_id": 1, "name": "Anna"},
+            {"sender_id": 2, "name": "Boris"},
+            {"sender_id": 3, "name": ""},      # empty name is skipped
+        ])
+        assert n == 2
+
+
+def test_reindex_applies_resolved_names(conn):
+    """End to end: a resolved name replaces the export label in window text."""
+    seed(conn, [(1, 0, "hello"), (2, 5, "world")])
+    conn.execute("UPDATE messages SET sender='Private Label', sender_id=99")
+    conn.commit()
+    people.record(conn, 99, "Actual Person", None, "manual")
+    conn.commit()
+
+    # index without embeddings by faking the encoder
+    import numpy as np
+    from answerbot import embed
+    orig = embed.encode_passages
+    embed.encode_passages = lambda texts, **k: np.zeros((len(texts), config.EMBED_DIM), np.float32)
+    try:
+        index.reindex(conn, progress=False)
+    finally:
+        embed.encode_passages = orig
+
+    row = conn.execute("SELECT text, speakers FROM windows WHERE chat_id=1").fetchone()
+    assert "Actual Person" in row["text"]
+    assert "Private Label" not in row["text"]
+    assert row["speakers"] == "Actual Person"
 
 
 def test_fts_index_stays_in_sync(conn):
