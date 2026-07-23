@@ -18,6 +18,8 @@ labels after a reindex.
 import sqlite3
 import time
 
+from . import config
+
 # Higher wins; a live name won't overwrite one you set by hand.
 _TRUST = {"live": 0, "api": 1, "manual": 2}
 
@@ -63,6 +65,19 @@ def resolve(names: dict[int, str], sender_id: int | None, fallback: str) -> str:
         if name:
             return name
     return fallback
+
+
+def speaker_label(
+    names: dict[int, str], sender_id: int | None, fallback: str, mode: str | None = None
+) -> str:
+    """How a speaker is shown, honouring SPEAKER_LABEL.
+
+    In "id" mode nobody's name appears at all — not resolved names, not export
+    labels — only a stable anonymous handle derived from the telegram user id.
+    """
+    if (mode or config.SPEAKER_LABEL) == "id":
+        return f"User {sender_id}" if sender_id is not None else "User unknown"
+    return resolve(names, sender_id, fallback)
 
 
 # --- Local, no-API workflow: dump a template, edit it, load it back ----------

@@ -11,17 +11,18 @@ from datetime import datetime, timezone
 from . import config, db, embed, people
 
 
-def render(msgs: list[sqlite3.Row], names: dict[int, str] | None = None) -> str:
+def render(msgs: list[sqlite3.Row], names: dict[int, str] | None = None, mode: str | None = None) -> str:
     """Render a window as a plain transcript, which is what gets embedded.
 
-    `names` resolves the export's private contact labels to real display names
-    by sender id; anyone unresolved keeps their stored label.
+    `names` resolves the export's private contact labels to real display names by
+    sender id; anyone unresolved keeps their stored label. Under SPEAKER_LABEL=id
+    (or mode="id") names are dropped entirely for anonymous ids.
     """
     names = names or {}
     lines = []
     for m in msgs:
         stamp = datetime.fromtimestamp(m["ts"], timezone.utc).strftime("%Y-%m-%d %H:%M")
-        who = people.resolve(names, m["sender_id"], m["sender"])
+        who = people.speaker_label(names, m["sender_id"], m["sender"], mode)
         lines.append(f"[{stamp}] {who}: {m['text']}")
     return "\n".join(lines)
 
@@ -109,7 +110,7 @@ def _index_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int, progre
     names = people.name_map(conn)
     rows = []
     for g in build_windows(msgs):
-        speakers = sorted({people.resolve(names, m["sender_id"], m["sender"]) for m in g if m["sender"]})
+        speakers = sorted({people.speaker_label(names, m["sender_id"], m["sender"]) for m in g if m["sender"]})
         rows.append(
             (chat_id, g[0]["msg_id"], g[-1]["msg_id"], g[0]["ts"], g[-1]["ts"],
              ", ".join(speakers), render(g, names))
@@ -226,8 +227,15 @@ def main() -> None:
         help="with --update, also re-window this many recent days to catch edits "
         f"(default {config.UPDATE_LOOKBACK_DAYS}; 0 = tail only)",
     )
+    ap.add_argument(
+        "--speaker-label",
+        choices=["name", "id"],
+        default=config.SPEAKER_LABEL,
+        help="label speakers by real name or anonymous id (default %(default)s)",
+    )
     args = ap.parse_args()
 
+    config.SPEAKER_LABEL = args.speaker_label  # honoured by render/_index_from
     conn = db.connect()
     if args.update:
         result = update(conn, args.chat_id, lookback_days=args.lookback_days, progress=True)

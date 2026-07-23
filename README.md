@@ -86,6 +86,20 @@ by hand is never overwritten by a live sighting. Names live in the window text,
 so changes take effect on the next (re)index — a full `index` to apply them
 everywhere, or `--update` for just the recent tail.
 
+#### Or drop names entirely
+
+To show speakers as anonymous ids instead of any name — resolved names *and*
+export labels suppressed everywhere — set `SPEAKER_LABEL=id`:
+
+```bash
+SPEAKER_LABEL=id python -m answerbot.index          # or: python -m answerbot.index --speaker-label id
+```
+
+Speakers then render as `User <telegram id>` (stable, so threads and "who said
+what" still hold together) with no name attached. Set it in `.env` so the bot
+uses it too. Caveat: this anonymizes the *speaker label* only — message **text**
+can still contain names or `@mentions` that people typed, which are left as-is.
+
 ## Running the bot
 
 1. Create a bot with @BotFather and copy the token.

@@ -24,6 +24,11 @@ WINDOW_OVERLAP = int(os.getenv("WINDOW_OVERLAP", "2"))
 # edited; older ones only drift if reconciled by a full reindex. 0 = tail only.
 UPDATE_LOOKBACK_DAYS = int(os.getenv("UPDATE_LOOKBACK_DAYS", "14"))
 
+# How speakers are labelled in windows and answers:
+#   "name"  resolved real name, falling back to the export label (default)
+#   "id"    anonymous "User <telegram id>" — no names appear anywhere
+SPEAKER_LABEL = os.getenv("SPEAKER_LABEL", "name")
+
 # Retrieval
 TOP_K = int(os.getenv("TOP_K", "8"))
 # RRF_K flattens score differences; 60 is the paper's default and suits large

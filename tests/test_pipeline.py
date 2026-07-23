@@ -368,6 +368,45 @@ class TestPeopleNames:
         assert "Vutyan" not in out          # private label replaced
         assert "Unknown Label: yo" in out    # unresolved sender keeps its label
 
+    def test_id_mode_drops_all_names(self):
+        # even a resolved name is suppressed in id mode
+        assert people.speaker_label({7: "Victor"}, 7, "Label", mode="id") == "User 7"
+        assert people.speaker_label({}, None, "Label", mode="id") == "User unknown"
+
+    def test_name_mode_still_resolves(self):
+        assert people.speaker_label({7: "Victor"}, 7, "Label", mode="name") == "Victor"
+
+    def test_render_id_mode_shows_no_names(self):
+        msgs = [
+            {"ts": 0, "sender": "Vutyan нейроэкономика Витя", "sender_id": 7, "text": "hi"},
+            {"ts": 1, "sender": "Some Label", "sender_id": 8, "text": "yo"},
+        ]
+        out = render(msgs, names={7: "Victor"}, mode="id")
+        assert "User 7: hi" in out
+        assert "User 8: yo" in out
+        assert "Victor" not in out and "Vutyan" not in out and "Some Label" not in out
+
+    def test_reindex_id_mode(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "SPEAKER_LABEL", "id")
+        seed(conn, [(1, 0, "hello")])
+        conn.execute("UPDATE messages SET sender='Private Label', sender_id=99")
+        conn.commit()
+        people.record(conn, 99, "Actual Person", None, "manual")
+        conn.commit()
+
+        import numpy as np
+        from answerbot import embed
+        monkeypatch.setattr(
+            embed, "encode_passages",
+            lambda texts, **k: np.zeros((len(texts), config.EMBED_DIM), np.float32),
+        )
+        index.reindex(conn, progress=False)
+
+        row = conn.execute("SELECT text, speakers FROM windows WHERE chat_id=1").fetchone()
+        assert "User 99" in row["text"]
+        assert "Actual Person" not in row["text"] and "Private Label" not in row["text"]
+        assert row["speakers"] == "User 99"
+
     def test_load_mapping_counts_written(self, conn):
         n = people.load_mapping(conn, [
             {"sender_id": 1, "name": "Anna"},
