@@ -52,10 +52,15 @@ class Answer:
         idx = self.cited_indices() or list(range(1, min(limit, len(self.hits)) + 1))
         return [(i, self.hits[i - 1]) for i in idx][:limit]
 
-    def sources_block(self, limit: int = 3) -> str:
+    def all_sources(self) -> list[tuple[int, retrieve.Hit, bool]]:
+        """Every retrieved window with its link and whether the model cited it."""
+        cited = set(self.cited_indices())
+        return [(i, h, i in cited) for i, h in enumerate(self.hits, 1)]
+
+    def sources_block(self) -> str:
         return "\n".join(
-            f"[W{i}] {h.when()} · {h.speakers} · {h.link()}"
-            for i, h in self.source_links(limit)
+            f"[W{i}]{' ✓' if was_cited else ''} {h.when()} · {h.speakers} · {h.link()}"
+            for i, h, was_cited in self.all_sources()
         )
 
     def primary_source(self) -> retrieve.Hit | None:

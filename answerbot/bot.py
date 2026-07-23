@@ -58,11 +58,12 @@ def format_answer(result: answer.Answer) -> str:
     if link:
         body += f'\n\n➡️ <a href="{link}">Go to the first message</a>'
 
-    pairs = result.source_links()
-    if pairs:
+    sources = result.all_sources()
+    if sources:
         lines = "\n".join(
-            f'<a href="{h.link()}">[W{i}]</a> {html.quote(h.when())} · {html.quote(h.speakers)}'
-            for i, h in pairs
+            f'<a href="{h.link()}">[W{i}]</a>{" ✓" if was_cited else ""} '
+            f'{html.quote(h.when())} · {html.quote(h.speakers)}'
+            for i, h, was_cited in sources
         )
         body += "\n\n<b>Sources</b>\n" + lines
     return body

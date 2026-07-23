@@ -165,19 +165,18 @@ class TestAnswerCitations:
         a = Answer("The cost was 200 [W2], see also [W3].", [hit(1), hit(2), hit(3)])
         assert [h.first_msg for h in a.cited_hits()] == [2, 3]
 
-    def test_sources_block_ignores_uncited_and_out_of_range(self):
+    def test_sources_block_lists_every_result_and_marks_cited(self):
         a = Answer("answer [W1] and a hallucinated [W9]", [hit(1), hit(2)])
         block = a.sources_block()
-        assert "[W1]" in block
-        assert "[W2]" not in block  # retrieved but not cited
-        assert "W9" not in block    # cited but never existed
+        assert "[W1] ✓" in block          # cited windows get a check
+        assert "[W2]" in block            # every retrieved window is linked...
+        assert "[W2] ✓" not in block      # ...but not marked cited
+        assert "W9" not in block          # out-of-range citation is ignored
+        assert block.count("https://t.me/c/") == 2  # a link per result
 
-    def test_sources_fall_back_to_top_hits_when_uncited(self):
-        """An answer with no [W#] tags still gets links to what it drew on."""
-        a = Answer("Postgres, for the JSON support.", [hit(1), hit(2), hit(3), hit(4)])
-        pairs = a.source_links(limit=3)
-        assert [i for i, _ in pairs] == [1, 2, 3]
-        assert "t.me" in a.sources_block()
+    def test_all_sources_flags_cited(self):
+        a = Answer("see [W2]", [hit(1), hit(2), hit(3)])
+        assert [(i, c) for i, _, c in a.all_sources()] == [(1, False), (2, True), (3, False)]
 
     def test_no_hits_means_no_sources(self):
         a = Answer("I couldn't find that in the chat history.", [])
