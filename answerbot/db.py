@@ -1,6 +1,8 @@
 """SQLite storage: schema, connection helper, and the FTS triggers."""
 
+import json
 import sqlite3
+import time
 from pathlib import Path
 
 from . import config
@@ -76,6 +78,19 @@ CREATE TABLE IF NOT EXISTS aliases (
   sender_id INTEGER PRIMARY KEY,
   ordinal   INTEGER NOT NULL UNIQUE
 );
+
+-- Query log: one row per answered question, for debugging retrieval without
+-- scraping Telegram. Disabled with QUERY_LOG=0.
+CREATE TABLE IF NOT EXISTS query_log (
+  id          INTEGER PRIMARY KEY,
+  ts          INTEGER NOT NULL,
+  question    TEXT NOT NULL,
+  chat_ids    TEXT,
+  window_ids  TEXT NOT NULL,
+  cited_ids   TEXT NOT NULL,
+  latency_ms  INTEGER,
+  model       TEXT
+);
 """
 
 
@@ -105,3 +120,32 @@ def stats(conn: sqlite3.Connection) -> dict:
         "embedded": count("window_vecs"),
         "chats": count("(SELECT DISTINCT chat_id FROM messages)"),
     }
+
+
+def log_query(
+    conn: sqlite3.Connection,
+    *,
+    question: str,
+    chat_ids: list[int] | None,
+    window_ids: list[int],
+    cited_ids: list[int],
+    latency_ms: int,
+    model: str | None,
+) -> None:
+    """Append one answered question. No-op when QUERY_LOG is off."""
+    if not config.QUERY_LOG:
+        return
+    conn.execute(
+        """INSERT INTO query_log (ts, question, chat_ids, window_ids, cited_ids, latency_ms, model)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            int(time.time()),
+            question,
+            json.dumps(chat_ids) if chat_ids is not None else None,
+            json.dumps(window_ids),
+            json.dumps(cited_ids),
+            latency_ms,
+            model,
+        ),
+    )
+    conn.commit()

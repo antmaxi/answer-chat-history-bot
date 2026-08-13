@@ -6,6 +6,7 @@ individually retrieves noise.
 """
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from . import config, db, embed, people, retrieve
@@ -69,9 +70,10 @@ def build_windows(msgs: list[sqlite3.Row]) -> list[list[sqlite3.Row]]:
     return windows
 
 
-def _chat_ids(conn: sqlite3.Connection, chat_id: int | None) -> list[int]:
-    if chat_id is not None:
-        return [chat_id]
+def _chat_ids(conn: sqlite3.Connection, chat_id: retrieve.ChatId = None) -> list[int]:
+    chats = retrieve.normalize_chat_ids(chat_id)
+    if chats is not None:
+        return chats
     return [r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")]
 
 
@@ -94,13 +96,22 @@ def _rebuild_boundary(conn: sqlite3.Connection, chat_id: int) -> int:
     return row[0] if row else 0
 
 
-def _index_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int, progress: bool) -> int:
-    """(Re)window and embed messages with msg_id >= from_msg_id for one chat.
+@dataclass
+class EmbedJob:
+    """Windows ready to embed, produced under the DB lock, encoded off it."""
 
-    The single indexing primitive. Windows at or after the boundary are dropped
-    and rebuilt — their vectors cascade away — and everything before it is left
-    untouched, so only the changed tail is re-embedded. `from_msg_id=0` rebuilds
-    the whole chat. Embedding, the expensive step, is what this narrows down.
+    chat_id: int
+    n_windows: int
+    watermark: int
+    pending_ids: list[int]
+    pending_texts: list[str]
+
+
+def plan_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int) -> EmbedJob | None:
+    """Rebuild windows from `from_msg_id` onward. Does not encode.
+
+    Returns the texts that still need vectors, so the caller can encode them
+    without holding a database lock. `None` if this chat has no messages in range.
     """
     conn.execute("DELETE FROM windows WHERE chat_id=? AND first_msg>=?", (chat_id, from_msg_id))
     conn.commit()  # vectors for the dropped windows go with them (ON DELETE CASCADE)
@@ -110,7 +121,7 @@ def _index_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int, progre
         (chat_id, from_msg_id),
     ).fetchall()
     if not msgs:
-        return 0
+        return None
 
     names = people.name_map(conn)
     people.ensure_aliases(conn, (m["sender_id"] for m in msgs))
@@ -141,28 +152,58 @@ def _index_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int, progre
            WHERE w.chat_id=? AND v.window_id IS NULL ORDER BY w.id""",
         (chat_id,),
     ).fetchall()
-    if pending:
-        vecs = embed.encode_passages([r["text"] for r in pending], progress=progress)
+    return EmbedJob(
+        chat_id=chat_id,
+        n_windows=len(rows),
+        watermark=max(m["msg_id"] for m in msgs),
+        pending_ids=[r["id"] for r in pending],
+        pending_texts=[r["text"] for r in pending],
+    )
+
+
+def apply_job(conn: sqlite3.Connection, job: EmbedJob, vecs) -> int:
+    """Write vectors (if any) and advance the watermark."""
+    if job.pending_ids and vecs is not None:
         conn.executemany(
             "INSERT OR REPLACE INTO window_vecs (window_id, vec) VALUES (?, ?)",
-            [(r["id"], embed.pack(v)) for r, v in zip(pending, vecs)],
+            [(wid, embed.pack(v)) for wid, v in zip(job.pending_ids, vecs)],
         )
-
     conn.execute(
         """INSERT INTO state (chat_id, last_indexed_msg_id) VALUES (?, ?)
            ON CONFLICT (chat_id) DO UPDATE SET last_indexed_msg_id=excluded.last_indexed_msg_id""",
-        (chat_id, max(m["msg_id"] for m in msgs)),
+        (job.chat_id, job.watermark),
     )
     conn.commit()
-    return len(rows)
-
-
-def reindex(conn: sqlite3.Connection, chat_id: int | None = None, progress: bool = True) -> dict:
-    """Rebuild windows and embeddings from scratch for one chat, or for all."""
-    chat_ids = _chat_ids(conn, chat_id)
-    total = sum(_index_from(conn, cid, 0, progress) for cid in chat_ids)
     retrieve.invalidate_cache()
-    return {"chats": len(chat_ids), "windows": total}
+    return job.n_windows
+
+
+def _index_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int, progress: bool) -> int:
+    """(Re)window and embed messages with msg_id >= from_msg_id for one chat.
+
+    The single indexing primitive. Windows at or after the boundary are dropped
+    and rebuilt — their vectors cascade away — and everything before it is left
+    untouched, so only the changed tail is re-embedded. `from_msg_id=0` rebuilds
+    the whole chat. Embedding, the expensive step, is what this narrows down.
+    """
+    job = plan_from(conn, chat_id, from_msg_id)
+    if job is None:
+        return 0
+    vecs = None
+    if job.pending_texts:
+        vecs = embed.encode_passages(job.pending_texts, progress=progress)
+    return apply_job(conn, job, vecs)
+
+
+def reindex(conn: sqlite3.Connection, chat_id: retrieve.ChatId = None, progress: bool = True) -> dict:
+    """Rebuild windows and embeddings from scratch for one chat, or for all."""
+    jobs = plan_reindex(conn, chat_id)
+    total = 0
+    for job in jobs:
+        vecs = embed.encode_passages(job.pending_texts, progress=progress) if job.pending_texts else None
+        total += apply_job(conn, job, vecs)
+    retrieve.invalidate_cache()
+    return {"chats": len(jobs), "windows": total}
 
 
 def _lookback_boundary(conn: sqlite3.Connection, chat_id: int, days: int) -> int | None:
@@ -182,9 +223,47 @@ def _lookback_boundary(conn: sqlite3.Connection, chat_id: int, days: int) -> int
     ).fetchone()[0]
 
 
+def plan_reindex(conn: sqlite3.Connection, chat_id: retrieve.ChatId = None) -> list[EmbedJob]:
+    """Drop and rebuild windows for each chat; return embed jobs (no encoding)."""
+    jobs = []
+    for cid in _chat_ids(conn, chat_id):
+        job = plan_from(conn, cid, 0)
+        if job is not None:
+            jobs.append(job)
+    return jobs
+
+
+def plan_update(
+    conn: sqlite3.Connection,
+    chat_id: retrieve.ChatId = None,
+    lookback_days: int = 0,
+    force: bool = False,
+) -> list[EmbedJob]:
+    """Decide which tails to rebuild and insert their windows. Does not encode."""
+    jobs = []
+    for cid in _chat_ids(conn, chat_id):
+        new = conn.execute(
+            "SELECT count(*) FROM messages WHERE chat_id=? AND msg_id>?",
+            (cid, _watermark(conn, cid)),
+        ).fetchone()[0]
+        if not new and not lookback_days and not force:
+            continue
+
+        boundary = _rebuild_boundary(conn, cid)
+        if lookback_days:
+            lb = _lookback_boundary(conn, cid, lookback_days)
+            if lb is not None:
+                boundary = min(boundary, lb)
+
+        job = plan_from(conn, cid, boundary)
+        if job is not None:
+            jobs.append(job)
+    return jobs
+
+
 def update(
     conn: sqlite3.Connection,
-    chat_id: int | None = None,
+    chat_id: retrieve.ChatId = None,
     lookback_days: int = 0,
     progress: bool = False,
     force: bool = False,
@@ -202,27 +281,12 @@ def update(
     which is how a live edit of a just-indexed message refreshes its window.
     A positive lookback also runs when only edits, not new messages, are pending.
     """
+    jobs = plan_update(conn, chat_id, lookback_days=lookback_days, force=force)
     total_windows = 0
-    touched = 0
-    for cid in _chat_ids(conn, chat_id):
-        new = conn.execute(
-            "SELECT count(*) FROM messages WHERE chat_id=? AND msg_id>?",
-            (cid, _watermark(conn, cid)),
-        ).fetchone()[0]
-        if not new and not lookback_days and not force:
-            continue
-
-        boundary = _rebuild_boundary(conn, cid)
-        if lookback_days:
-            lb = _lookback_boundary(conn, cid, lookback_days)
-            if lb is not None:
-                boundary = min(boundary, lb)
-
-        total_windows += _index_from(conn, cid, boundary, progress)
-        touched += 1
-    if touched:
-        retrieve.invalidate_cache()
-    return {"chats": touched, "windows": total_windows}
+    for job in jobs:
+        vecs = embed.encode_passages(job.pending_texts, progress=progress) if job.pending_texts else None
+        total_windows += apply_job(conn, job, vecs)
+    return {"chats": len(jobs), "windows": total_windows}
 
 
 def main() -> None:

@@ -12,13 +12,14 @@ import asyncio
 import logging
 import re
 import threading
+import time
 
 from aiogram import Bot, Dispatcher, F, html
 from aiogram.enums import ChatType
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from . import answer, config, db, people
+from . import answer, config, cooldown, db, embed, index, people, retrieve
 from .ingest import live
 
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +30,10 @@ dp = Dispatcher()
 # opened without the same-thread guard and every access is serialized by a lock.
 conn = db.connect(check_same_thread=False)
 _db_lock = threading.Lock()
+# Indexing (window rebuild + encode) is serialized separately so ingest and
+# search can proceed while SentenceTransformer is running.
+_index_lock = asyncio.Lock()
+_answers = cooldown.Cooldown(config.ANSWER_COOLDOWN_SECONDS)
 
 
 async def _db(fn, *args):
@@ -38,6 +43,40 @@ async def _db(fn, *args):
             return fn(*args)
 
     return await asyncio.to_thread(locked)
+
+
+async def _apply_jobs(jobs: list[index.EmbedJob]) -> dict:
+    """Encode off the DB lock, then write vectors under it."""
+    windows = 0
+    for job in jobs:
+        vecs = None
+        if job.pending_texts:
+            vecs = await asyncio.to_thread(embed.encode_passages, job.pending_texts, 64, False)
+        windows += await _db(index.apply_job, conn, job, vecs)
+    return {"chats": len(jobs), "windows": windows}
+
+
+async def index_chats(
+    chat_id: int | list[int] | None,
+    *,
+    lookback: int = 0,
+    force: bool = False,
+    full: bool = False,
+) -> dict:
+    """Rebuild windows (and encode) without holding the DB lock during embed."""
+    async with _index_lock:
+        if full:
+            jobs = await _db(index.plan_reindex, conn, chat_id)
+        else:
+            jobs = await _db(index.plan_update, conn, chat_id, lookback, force)
+        return await _apply_jobs(jobs)
+
+
+async def _background_index(chat_id: int, *, force: bool = False) -> None:
+    try:
+        await index_chats(chat_id, force=force)
+    except Exception:
+        log.exception("background reindex failed chat_id=%s", chat_id)
 
 
 def format_answer(result: answer.Answer) -> str:
@@ -100,9 +139,29 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
     if not question.strip():
         await message.reply("Ask me a question about this chat's history.")
         return
+    user_id = message.from_user.id if message.from_user else 0
+    wait = _answers.remaining(
+        (user_id, message.chat.id),
+        exempt=user_id in config.ADMIN_USER_IDS,
+    )
+    if wait > 0:
+        await message.reply(f"Wait {int(wait) + 1}s before asking again.")
+        return
+    _answers.touch((user_id, message.chat.id))
+
     thinking = await message.reply("…")
+    t0 = time.monotonic()
     try:
-        result = await _db(answer.answer, conn, question, chat_id)
+        # Encode any unwindowed tail off the DB lock, then search under it,
+        # then call the LLM without holding either lock.
+        await index_chats(chat_id)
+        hits = await _db(retrieve.search, conn, question, chat_id)
+
+        def complete():
+            return answer.complete_answer(question, hits)
+
+        result = await asyncio.to_thread(complete)
+        await _db(answer._record, conn, question, chat_id, result, t0, None)
         await thinking.edit_text(format_answer(result), parse_mode="HTML", disable_web_page_preview=True)
     except Exception:
         log.exception("failed to answer")
@@ -117,7 +176,7 @@ async def cmd_help(message: Message) -> None:
         "I answer questions from this chat's history.\n"
         "In a group, @mention me or reply to my messages. In DM, just ask.\n"
         "Commands: /ask <question>, /stats"
-        "\nAdmins: /reindex, /resolve (fix member names)"
+        "\nAdmins: /reindex (recent), /reindex full, /resolve (fix member names)"
     )
 
 
@@ -143,14 +202,17 @@ async def cmd_stats(message: Message) -> None:
 
 
 @dp.message(Command("reindex"))
-async def cmd_reindex(message: Message) -> None:
+async def cmd_reindex(message: Message, command) -> None:
     if message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply("Admins only.")
         return
-    from .index import reindex
-
-    await message.reply("Reindexing…")
-    result = await _db(reindex, conn, None, False)
+    full = (command.args or "").strip().lower() == "full"
+    if full:
+        await message.reply("Full reindex…")
+        result = await index_chats(None, full=True)
+    else:
+        await message.reply("Updating recent history…")
+        result = await index_chats(None, lookback=config.UPDATE_LOOKBACK_DAYS)
     await message.reply(f"Done: {result['windows']} windows across {result['chats']} chat(s).")
 
 
@@ -227,9 +289,11 @@ async def _ingest_group_message(message: Message, *, edited: bool = False) -> No
         u = message.from_user
         await _db(_record_person, u.id, u.full_name, u.username)
     if edited:
-        await _db(live.refresh_if_in_tail, conn, message.chat.id, message.message_id)
+        asyncio.create_task(_background_index(message.chat.id, force=True))
     else:
-        await _db(live.maybe_reindex, conn, message.chat.id)
+        pending = await _db(live.pending_count, conn, message.chat.id)
+        if pending >= config.LIVE_REINDEX_EVERY:
+            asyncio.create_task(_background_index(message.chat.id))
 
 
 @dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))

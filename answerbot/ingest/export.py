@@ -82,14 +82,11 @@ def iter_messages(export: dict, chat_id: int) -> Iterator[tuple]:
         )
 
 
-def load(conn: sqlite3.Connection, path: Path | str) -> dict:
-    """Read an export file into the database. Safe to re-run: rows are upserted."""
-    with open(path, encoding="utf-8") as fh:
-        export = json.load(fh)
-
+def load_data(conn: sqlite3.Connection, export: dict, source: str = "export") -> dict:
+    """Insert an already-parsed export. Safe to re-run: rows are upserted."""
     chat_id = export.get("id")
     if chat_id is None:
-        raise ValueError(f"{path}: no chat id in export — is this a result.json?")
+        raise ValueError(f"{source}: no chat id in export — is this a result.json?")
 
     rows = list(iter_messages(export, int(chat_id)))
     before = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
@@ -110,6 +107,13 @@ def load(conn: sqlite3.Connection, path: Path | str) -> dict:
         "usable": len(rows),
         "inserted": after - before,
     }
+
+
+def load(conn: sqlite3.Connection, path: Path | str) -> dict:
+    """Read an export file into the database. Safe to re-run: rows are upserted."""
+    with open(path, encoding="utf-8") as fh:
+        export = json.load(fh)
+    return load_data(conn, export, source=str(path))
 
 
 def main() -> None:

@@ -1,7 +1,7 @@
 """Generate a synthetic Telegram export to exercise the pipeline."""
-import json, random
+import json
+import random
 
-random.seed(7)
 BASE = 1735689600  # 2025-01-01
 
 # (gap_hours_before, [(sender, text), ...])
@@ -57,24 +57,31 @@ CONVOS = [
     ]),
 ]
 
-messages = [{"id": 1, "type": "service", "date_unixtime": str(BASE), "actor": "Anna",
-             "action": "create_group", "text": ""}]
-mid, ts = 2, BASE
-for gap_h, convo in CONVOS:
-    ts += gap_h * 3600
-    for sender, text in convo:
-        ts += random.randint(20, 200)
-        messages.append({
-            "id": mid, "type": "message", "date_unixtime": str(ts),
-            "from": sender, "from_id": f"user{abs(hash(sender)) % 10**6}",
-            "text": text, "text_entities": [{"type": "plain", "text": text}],
-        })
-        mid += 1
-    # a photo with no caption, which the parser should skip
-    messages.append({"id": mid, "type": "message", "date_unixtime": str(ts + 60),
-                     "from": "Giorgi", "from_id": "user1", "photo": "photos/x.jpg", "text": ""})
-    mid += 1
 
-export = {"name": "Team chat", "type": "private_supergroup", "id": 1234567890,
-          "messages": messages}
-print(json.dumps(export, ensure_ascii=False))
+def build_export() -> dict:
+    """A deterministic Telegram Desktop JSON export (no I/O)."""
+    rng = random.Random(7)
+    messages = [{"id": 1, "type": "service", "date_unixtime": str(BASE), "actor": "Anna",
+                 "action": "create_group", "text": ""}]
+    mid, ts = 2, BASE
+    for gap_h, convo in CONVOS:
+        ts += gap_h * 3600
+        for sender, text in convo:
+            ts += rng.randint(20, 200)
+            messages.append({
+                "id": mid, "type": "message", "date_unixtime": str(ts),
+                "from": sender, "from_id": f"user{abs(hash(sender)) % 10**6}",
+                "text": text, "text_entities": [{"type": "plain", "text": text}],
+            })
+            mid += 1
+        # a photo with no caption, which the parser should skip
+        messages.append({"id": mid, "type": "message", "date_unixtime": str(ts + 60),
+                         "from": "Giorgi", "from_id": "user1", "photo": "photos/x.jpg", "text": ""})
+        mid += 1
+
+    return {"name": "Team chat", "type": "private_supergroup", "id": 1234567890,
+            "messages": messages}
+
+
+if __name__ == "__main__":
+    print(json.dumps(build_export(), ensure_ascii=False))

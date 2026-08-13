@@ -14,9 +14,11 @@ from datetime import datetime, timezone
 import numpy as np
 
 from . import config, embed
+from .timerange import TimeRange, parse_time_range
 
 # None = every chat; a tuple of ids is an allow-list (empty means no chats).
-_vec_cache: dict[tuple[int, ...] | None, tuple[list[int], np.ndarray]] = {}
+# values: window ids, vectors, (ts_start, ts_end) per window
+_vec_cache: dict[tuple[int, ...] | None, tuple[list[int], np.ndarray, np.ndarray]] = {}
 _df_cache: dict[str, int] = {}
 
 # A single chat, an allow-list, or None for “no restriction” (CLI default).
@@ -100,7 +102,13 @@ def fts_query(conn: sqlite3.Connection, question: str) -> str:
     return " OR ".join(f'"{t}"' for t in tokens)
 
 
-def keyword_search(conn: sqlite3.Connection, question: str, chat_id: ChatId, limit: int) -> list[int]:
+def keyword_search(
+    conn: sqlite3.Connection,
+    question: str,
+    chat_id: ChatId,
+    limit: int,
+    time_range: TimeRange | None = None,
+) -> list[int]:
     """Best-matching messages, mapped up to the windows that contain them."""
     query = fts_query(conn, question)
     if not query:
@@ -144,24 +152,29 @@ def keyword_search(conn: sqlite3.Connection, question: str, chat_id: ChatId, lim
         JOIN messages m ON m.id = ranked.mid
         JOIN windows  w ON w.chat_id = m.chat_id
                        AND m.msg_id BETWEEN w.first_msg AND w.last_msg
-        GROUP BY w.id ORDER BY rank LIMIT ?
     """
+    if time_range is not None:
+        sql += " WHERE w.ts_end >= ? AND w.ts_start <= ?"
+        params.extend([time_range.start, time_range.end])
+    sql += " GROUP BY w.id ORDER BY rank LIMIT ?"
     params.append(limit)
 
     return [r[0] for r in conn.execute(sql, params)]
 
 
-def _vectors(conn: sqlite3.Connection, chat_id: ChatId) -> tuple[list[int], np.ndarray]:
+def _vectors(conn: sqlite3.Connection, chat_id: ChatId) -> tuple[list[int], np.ndarray, np.ndarray]:
     """Load and cache the vector matrix. Small enough to keep in memory."""
     chats = normalize_chat_ids(chat_id)
+    empty_times = np.zeros((0, 2), dtype=np.int64)
     if chats is not None and not chats:
-        return [], np.zeros((0, config.EMBED_DIM), dtype=np.float32)
+        return [], np.zeros((0, config.EMBED_DIM), dtype=np.float32), empty_times
 
     key = None if chats is None else tuple(sorted(chats))
     if key in _vec_cache:
         return _vec_cache[key]
 
-    sql = "SELECT v.window_id, v.vec FROM window_vecs v JOIN windows w ON w.id = v.window_id"
+    sql = """SELECT v.window_id, v.vec, w.ts_start, w.ts_end
+             FROM window_vecs v JOIN windows w ON w.id = v.window_id"""
     params: list = []
     if chats is not None:
         placeholders = ",".join("?" * len(chats))
@@ -169,14 +182,17 @@ def _vectors(conn: sqlite3.Connection, chat_id: ChatId) -> tuple[list[int], np.n
         params.extend(chats)
     sql += " ORDER BY v.window_id"
 
-    ids, blobs = [], []
+    ids, blobs, starts, ends = [], [], [], []
     for row in conn.execute(sql, params):
         ids.append(row[0])
         blobs.append(embed.unpack(row[1]))
+        starts.append(row[2])
+        ends.append(row[3])
 
     matrix = np.vstack(blobs) if blobs else np.zeros((0, config.EMBED_DIM), dtype=np.float32)
-    _vec_cache[key] = (ids, matrix)
-    return ids, matrix
+    times = np.column_stack([starts, ends]) if ids else empty_times
+    _vec_cache[key] = (ids, matrix, times)
+    return ids, matrix, times
 
 
 def invalidate_cache() -> None:
@@ -185,10 +201,23 @@ def invalidate_cache() -> None:
     _df_cache.clear()
 
 
-def vector_search(conn: sqlite3.Connection, question: str, chat_id: ChatId, limit: int) -> list[int]:
-    ids, matrix = _vectors(conn, chat_id)
+def vector_search(
+    conn: sqlite3.Connection,
+    question: str,
+    chat_id: ChatId,
+    limit: int,
+    time_range: TimeRange | None = None,
+) -> list[int]:
+    ids, matrix, times = _vectors(conn, chat_id)
     if not ids:
         return []
+
+    if time_range is not None:
+        mask = (times[:, 1] >= time_range.start) & (times[:, 0] <= time_range.end)
+        if not np.any(mask):
+            return []
+        ids = [i for i, keep in zip(ids, mask) if keep]
+        matrix = matrix[mask]
 
     # Vectors are normalized at write time, so a dot product is the cosine.
     scores = matrix @ embed.encode_query(question)
@@ -201,21 +230,26 @@ def search(
     question: str,
     chat_id: ChatId = None,
     top_k: int | None = None,
+    now: datetime | None = None,
+    time_range: TimeRange | None = None,
 ) -> list[Hit]:
     chats = normalize_chat_ids(chat_id)
     if chats is not None and not chats:
         return []
     allowed = None if chats is None else set(chats)
 
+    if time_range is None:
+        time_range = parse_time_range(question, now)
+
     top_k = top_k or config.TOP_K
-    pool = top_k * 4
+    pool = top_k * 8 if time_range else top_k * 4
 
     # Vector search carries more weight: most questions are paraphrases of what
     # was actually said. Keyword search earns its place on names, numbers and
     # exact strings like passwords, where embeddings are weak.
     rankings = [
-        (keyword_search(conn, question, chat_id, pool), config.WEIGHT_KEYWORD),
-        (vector_search(conn, question, chat_id, pool), config.WEIGHT_VECTOR),
+        (keyword_search(conn, question, chat_id, pool, time_range), config.WEIGHT_KEYWORD),
+        (vector_search(conn, question, chat_id, pool, time_range), config.WEIGHT_VECTOR),
     ]
 
     fused: dict[int, float] = {}
@@ -241,6 +275,8 @@ def search(
         if r is None:
             continue
         if allowed is not None and r["chat_id"] not in allowed:
+            continue
+        if time_range is not None and not time_range.overlaps(r["ts_start"], r["ts_end"]):
             continue
         hits.append(
             Hit(

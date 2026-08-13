@@ -145,5 +145,11 @@ The ones worth knowing: `DB_PATH`, `EMBED_MODEL`, `WINDOW_GAP_SECONDS`, `TOP_K`.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-Covers parsing, windowing and query construction. Retrieval *quality* is not
-unit-tested — check it by eye with `answerbot.search`.
+Covers parsing, windowing, query construction, and a golden-set retrieval
+check (keyword success@k on the synthetic fixture). For real embeddings:
+
+```bash
+python -m answerbot.eval --fixture
+```
+
+against an already-indexed DB, drop `--fixture`.

@@ -7,9 +7,10 @@ that guesses is one people mute after a week.
 
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 
-from . import config, retrieve
+from . import config, db, retrieve
 from .ingest import live
 from .llm import LLM, get_llm
 
@@ -83,28 +84,52 @@ def build_context(hits: list[retrieve.Hit]) -> str:
     return "\n\n".join(blocks)
 
 
+def complete_answer(question: str, hits: list[retrieve.Hit], llm: LLM | None = None) -> Answer:
+    """LLM call only — no DB. The bot runs this off the SQLite lock."""
+    if not hits:
+        return Answer("I couldn't find that in the chat history.", [])
+    llm = llm or get_llm()
+    user = f"Excerpts:\n\n{build_context(hits)}\n\n---\nQuestion: {question}"
+    text = llm.complete(SYSTEM, user)
+    return Answer(text, hits)
+
+
+def _record(conn: sqlite3.Connection, question: str, chat_id, result: Answer, t0: float, llm: LLM | None) -> None:
+    db.log_query(
+        conn,
+        question=question,
+        chat_ids=retrieve.normalize_chat_ids(chat_id),
+        window_ids=[h.window_id for h in result.hits],
+        cited_ids=[h.window_id for h in result.cited_hits()],
+        latency_ms=int((time.monotonic() - t0) * 1000),
+        model=getattr(llm, "model", None) or config.ANSWER_MODEL,
+    )
+
+
 def answer(
     conn: sqlite3.Connection,
     question: str,
     chat_id: retrieve.ChatId = None,
     llm: LLM | None = None,
+    *,
+    flush: bool = True,
 ) -> Answer:
+    t0 = time.monotonic()
     chats = retrieve.normalize_chat_ids(chat_id)
     if chats is not None and not chats:
-        return Answer("I couldn't find that in the chat history.", [])
+        result = Answer("I couldn't find that in the chat history.", [])
+        _record(conn, question, chat_id, result, t0, llm)
+        return result
 
     # Live messages are in FTS immediately but only join windows after the tail
     # is re-windowed. Flush first so "what did we just say" sees the open tail.
-    live.flush_tail(conn, chat_id)
+    if flush:
+        live.flush_tail(conn, chat_id)
 
     hits = retrieve.search(conn, question, chat_id)
-    if not hits:
-        return Answer("I couldn't find that in the chat history.", [])
-
-    llm = llm or get_llm()
-    user = f"Excerpts:\n\n{build_context(hits)}\n\n---\nQuestion: {question}"
-    text = llm.complete(SYSTEM, user)
-    return Answer(text, hits)
+    result = complete_answer(question, hits, llm)
+    _record(conn, question, chat_id, result, t0, llm)
+    return result
 
 
 def main() -> None:
