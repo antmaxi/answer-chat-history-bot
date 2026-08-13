@@ -8,7 +8,7 @@ individually retrieves noise.
 import sqlite3
 from datetime import datetime, timezone
 
-from . import config, db, embed, people
+from . import config, db, embed, people, retrieve
 
 
 def render(
@@ -161,6 +161,7 @@ def reindex(conn: sqlite3.Connection, chat_id: int | None = None, progress: bool
     """Rebuild windows and embeddings from scratch for one chat, or for all."""
     chat_ids = _chat_ids(conn, chat_id)
     total = sum(_index_from(conn, cid, 0, progress) for cid in chat_ids)
+    retrieve.invalidate_cache()
     return {"chats": len(chat_ids), "windows": total}
 
 
@@ -186,6 +187,7 @@ def update(
     chat_id: int | None = None,
     lookback_days: int = 0,
     progress: bool = False,
+    force: bool = False,
 ) -> dict:
     """Incrementally index only what changed near the tail.
 
@@ -196,8 +198,9 @@ def update(
     falls back to a full index.
 
     `lookback_days=0` (the default, used by live ingest) is pure tail and runs
-    only when new messages exist. A positive lookback also runs when only edits,
-    not new messages, are pending.
+    only when new messages exist. `force=True` rebuilds the open tail even then,
+    which is how a live edit of a just-indexed message refreshes its window.
+    A positive lookback also runs when only edits, not new messages, are pending.
     """
     total_windows = 0
     touched = 0
@@ -206,7 +209,7 @@ def update(
             "SELECT count(*) FROM messages WHERE chat_id=? AND msg_id>?",
             (cid, _watermark(conn, cid)),
         ).fetchone()[0]
-        if not new and not lookback_days:
+        if not new and not lookback_days and not force:
             continue
 
         boundary = _rebuild_boundary(conn, cid)
@@ -217,6 +220,8 @@ def update(
 
         total_windows += _index_from(conn, cid, boundary, progress)
         touched += 1
+    if touched:
+        retrieve.invalidate_cache()
     return {"chats": touched, "windows": total_windows}
 
 

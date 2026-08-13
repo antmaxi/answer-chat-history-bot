@@ -7,6 +7,7 @@ scores to be on a comparable scale.
 
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -14,8 +15,27 @@ import numpy as np
 
 from . import config, embed
 
-_vec_cache: dict[int, tuple[list[int], np.ndarray]] = {}
+# None = every chat; a tuple of ids is an allow-list (empty means no chats).
+_vec_cache: dict[tuple[int, ...] | None, tuple[list[int], np.ndarray]] = {}
 _df_cache: dict[str, int] = {}
+
+# A single chat, an allow-list, or None for “no restriction” (CLI default).
+# An empty sequence is *not* None: it means the caller may see zero chats.
+ChatId = int | Sequence[int] | None
+
+
+def normalize_chat_ids(chat_id: ChatId) -> list[int] | None:
+    """None → all chats; a list (possibly empty) → only those chats.
+
+    Empty is an allow-list that matches nothing, never a synonym for “all”.
+    """
+    if chat_id is None:
+        return None
+    if isinstance(chat_id, (str, bytes)):
+        raise TypeError(f"chat_id must be int or a sequence of ints, not {type(chat_id).__name__}")
+    if isinstance(chat_id, Sequence):
+        return [int(c) for c in chat_id]
+    return [int(chat_id)]
 
 
 @dataclass
@@ -80,50 +100,73 @@ def fts_query(conn: sqlite3.Connection, question: str) -> str:
     return " OR ".join(f'"{t}"' for t in tokens)
 
 
-def keyword_search(conn: sqlite3.Connection, question: str, chat_id: int | None, limit: int) -> list[int]:
+def keyword_search(conn: sqlite3.Connection, question: str, chat_id: ChatId, limit: int) -> list[int]:
     """Best-matching messages, mapped up to the windows that contain them."""
     query = fts_query(conn, question)
     if not query:
         return []
+    chats = normalize_chat_ids(chat_id)
+    if chats is not None and not chats:
+        return []
 
     # bm25() is only available where the FTS table is queried directly, so the
     # ranking happens in a CTE and the join to windows happens outside it.
-    sql = """
-        WITH ranked AS (
+    # Filter by chat inside the CTE so a busy foreign chat cannot crowd out the
+    # allow-list, and so we never even rank messages the caller must not see.
+    params: list = [query]
+    if chats is None:
+        ranked = """
             SELECT rowid AS mid, bm25(messages_fts) AS rank
             FROM messages_fts
             WHERE messages_fts MATCH ?
             ORDER BY rank
             LIMIT ?
-        )
+        """
+    else:
+        placeholders = ",".join("?" * len(chats))
+        ranked = f"""
+            SELECT messages_fts.rowid AS mid, bm25(messages_fts) AS rank
+            FROM messages_fts
+            JOIN messages scoped ON scoped.id = messages_fts.rowid
+            WHERE messages_fts MATCH ?
+              AND scoped.chat_id IN ({placeholders})
+            ORDER BY rank
+            LIMIT ?
+        """
+        params.extend(chats)
+    # Many messages collapse into few windows, so over-fetch inside the CTE.
+    params.append(limit * 20)
+
+    sql = f"""
+        WITH ranked AS ({ranked})
         SELECT w.id, min(ranked.rank) AS rank
         FROM ranked
         JOIN messages m ON m.id = ranked.mid
         JOIN windows  w ON w.chat_id = m.chat_id
                        AND m.msg_id BETWEEN w.first_msg AND w.last_msg
+        GROUP BY w.id ORDER BY rank LIMIT ?
     """
-    # Many messages collapse into few windows, so over-fetch inside the CTE.
-    params: list = [query, limit * 20]
-    if chat_id is not None:
-        sql += " WHERE m.chat_id = ?"
-        params.append(chat_id)
-    sql += " GROUP BY w.id ORDER BY rank LIMIT ?"
     params.append(limit)
 
     return [r[0] for r in conn.execute(sql, params)]
 
 
-def _vectors(conn: sqlite3.Connection, chat_id: int | None) -> tuple[list[int], np.ndarray]:
+def _vectors(conn: sqlite3.Connection, chat_id: ChatId) -> tuple[list[int], np.ndarray]:
     """Load and cache the vector matrix. Small enough to keep in memory."""
-    key = chat_id if chat_id is not None else -1
+    chats = normalize_chat_ids(chat_id)
+    if chats is not None and not chats:
+        return [], np.zeros((0, config.EMBED_DIM), dtype=np.float32)
+
+    key = None if chats is None else tuple(sorted(chats))
     if key in _vec_cache:
         return _vec_cache[key]
 
     sql = "SELECT v.window_id, v.vec FROM window_vecs v JOIN windows w ON w.id = v.window_id"
     params: list = []
-    if chat_id is not None:
-        sql += " WHERE w.chat_id = ?"
-        params.append(chat_id)
+    if chats is not None:
+        placeholders = ",".join("?" * len(chats))
+        sql += f" WHERE w.chat_id IN ({placeholders})"
+        params.extend(chats)
     sql += " ORDER BY v.window_id"
 
     ids, blobs = [], []
@@ -142,7 +185,7 @@ def invalidate_cache() -> None:
     _df_cache.clear()
 
 
-def vector_search(conn: sqlite3.Connection, question: str, chat_id: int | None, limit: int) -> list[int]:
+def vector_search(conn: sqlite3.Connection, question: str, chat_id: ChatId, limit: int) -> list[int]:
     ids, matrix = _vectors(conn, chat_id)
     if not ids:
         return []
@@ -156,9 +199,14 @@ def vector_search(conn: sqlite3.Connection, question: str, chat_id: int | None, 
 def search(
     conn: sqlite3.Connection,
     question: str,
-    chat_id: int | None = None,
+    chat_id: ChatId = None,
     top_k: int | None = None,
 ) -> list[Hit]:
+    chats = normalize_chat_ids(chat_id)
+    if chats is not None and not chats:
+        return []
+    allowed = None if chats is None else set(chats)
+
     top_k = top_k or config.TOP_K
     pool = top_k * 4
 
@@ -191,6 +239,8 @@ def search(
     for window_id, score in best:
         r = rows.get(window_id)
         if r is None:
+            continue
+        if allowed is not None and r["chat_id"] not in allowed:
             continue
         hits.append(
             Hit(

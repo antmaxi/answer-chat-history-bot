@@ -4,8 +4,8 @@ Group behaviour: replies only when @mentioned or when someone replies to one of
 its own messages, so it stays quiet otherwise. Requires privacy mode OFF in
 BotFather, or it receives no group messages to index at all.
 
-DM behaviour: any plain message is treated as a question. Access is gated on the
-sender being a member of at least one chat the bot has indexed.
+DM behaviour: any plain message is a question. Access is gated on membership of
+indexed chats, and search is restricted to those chats — never the whole DB.
 """
 
 import asyncio
@@ -80,19 +80,23 @@ async def indexed_chats() -> set[int]:
     )
 
 
-async def is_member_of_indexed_chat(bot: Bot, user_id: int) -> bool:
-    """DM access control: is this user in any chat we've indexed?"""
-    for chat_id in await indexed_chats():
+async def indexed_chats_for_user(bot: Bot, user_id: int) -> list[int]:
+    """Indexed chats this user is currently a member of.
+
+    This is the DM allow-list: search must not run over any other chat_id.
+    """
+    allowed: list[int] = []
+    for chat_id in sorted(await indexed_chats()):
         try:
             member = await bot.get_chat_member(chat_id, user_id)
             if member.status not in ("left", "kicked"):
-                return True
+                allowed.append(chat_id)
         except Exception:
             continue  # bot may not be an admin there, or the chat is gone
-    return False
+    return allowed
 
 
-async def respond(message: Message, question: str, chat_id: int | None) -> None:
+async def respond(message: Message, question: str, chat_id: int | list[int]) -> None:
     if not question.strip():
         await message.reply("Ask me a question about this chat's history.")
         return
@@ -118,9 +122,15 @@ async def cmd_help(message: Message) -> None:
 
 
 @dp.message(Command("ask"))
-async def cmd_ask(message: Message, command) -> None:
-    chat_id = message.chat.id if message.chat.type != ChatType.PRIVATE else None
-    await respond(message, command.args or "", chat_id)
+async def cmd_ask(message: Message, command, bot: Bot) -> None:
+    if message.chat.type == ChatType.PRIVATE:
+        allowed = await indexed_chats_for_user(bot, message.from_user.id)
+        if not allowed:
+            await message.reply("You need to be a member of a chat I've indexed to ask me things.")
+            return
+        await respond(message, command.args or "", allowed)
+        return
+    await respond(message, command.args or "", message.chat.id)
 
 
 @dp.message(Command("stats"))
@@ -194,8 +204,7 @@ async def _mentions_bot(message: Message, bot: Bot) -> bool:
     return f"@{me.username}".lower() in text.lower()
 
 
-@dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
-async def on_group_message(message: Message, bot: Bot) -> None:
+async def _ingest_group_message(message: Message, *, edited: bool = False) -> None:
     text = message.text or message.caption
     if not text:
         return
@@ -217,12 +226,29 @@ async def on_group_message(message: Message, bot: Bot) -> None:
     if message.from_user:
         u = message.from_user
         await _db(_record_person, u.id, u.full_name, u.username)
-    await _db(live.maybe_reindex, conn, message.chat.id)
+    if edited:
+        await _db(live.refresh_if_in_tail, conn, message.chat.id, message.message_id)
+    else:
+        await _db(live.maybe_reindex, conn, message.chat.id)
+
+
+@dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
+async def on_group_message(message: Message, bot: Bot) -> None:
+    text = message.text or message.caption
+    if not text:
+        return
+
+    await _ingest_group_message(message)
 
     if await _mentions_bot(message, bot):
         me = await bot.me()
         question = text.replace(f"@{me.username}", "").strip()
         await respond(message, question, message.chat.id)
+
+
+@dp.edited_message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
+async def on_group_edit(message: Message) -> None:
+    await _ingest_group_message(message, edited=True)
 
 
 # --- Direct messages ------------------------------------------------------
@@ -231,11 +257,11 @@ async def on_group_message(message: Message, bot: Bot) -> None:
 async def on_private_message(message: Message, bot: Bot) -> None:
     if not message.text:
         return
-    if not await is_member_of_indexed_chat(bot, message.from_user.id):
+    allowed = await indexed_chats_for_user(bot, message.from_user.id)
+    if not allowed:
         await message.reply("You need to be a member of a chat I've indexed to ask me things.")
         return
-    # DM searches across every chat the user could see. Single-chat for now.
-    await respond(message, message.text, None)
+    await respond(message, message.text, allowed)
 
 
 async def main() -> None:

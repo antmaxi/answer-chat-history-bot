@@ -9,8 +9,8 @@ import sqlite3
 import numpy as np
 import pytest
 
-from answerbot import config, db, index, people
-from answerbot.answer import Answer
+from answerbot import config, db, index, people, retrieve
+from answerbot.answer import Answer, answer as run_answer
 from answerbot.index import build_windows, render
 from answerbot.ingest import live
 from answerbot.ingest.export import flatten_text, parse_sender_id, parse_ts
@@ -34,6 +34,10 @@ def fake_embed(monkeypatch):
         return np.zeros((len(texts), config.EMBED_DIM), dtype=np.float32)
 
     monkeypatch.setattr("answerbot.embed.encode_passages", fake)
+    monkeypatch.setattr(
+        "answerbot.embed.encode_query",
+        lambda q: np.zeros(config.EMBED_DIM, dtype=np.float32),
+    )
     return calls
 
 
@@ -478,3 +482,110 @@ def test_fts_index_stays_in_sync(conn):
         "SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'pangolin'"
     ).fetchone()[0]
     assert stale == 0
+
+
+class FakeLLM:
+    def complete(self, system, user):
+        return "found it [W1]"
+
+
+class TestChatScope:
+    def test_normalize_chat_ids(self):
+        assert retrieve.normalize_chat_ids(None) is None
+        assert retrieve.normalize_chat_ids(5) == [5]
+        assert retrieve.normalize_chat_ids([1, 2]) == [1, 2]
+        assert retrieve.normalize_chat_ids(()) == []
+
+    def test_empty_allow_list_returns_nothing(self, conn, fake_embed):
+        seed(conn, STREAM[:10])
+        index.reindex(conn, progress=False)
+        assert retrieve.search(conn, "m1", chat_id=[]) == []
+
+    def test_does_not_return_other_chats(self, conn, fake_embed):
+        seed(conn, [(1, 1, "pangolin in alpha")], chat_id=1)
+        seed(conn, [(1, 1, "pangolin in beta")], chat_id=2)
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(conn, "pangolin", chat_id=1)
+        assert hits
+        assert all(h.chat_id == 1 for h in hits)
+        assert all("beta" not in h.text for h in hits)
+
+    def test_allow_list_includes_only_listed_chats(self, conn, fake_embed):
+        seed(conn, [(1, 1, "alpha unique")], chat_id=1)
+        seed(conn, [(1, 1, "beta unique")], chat_id=2)
+        seed(conn, [(1, 1, "gamma unique")], chat_id=3)
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(conn, "unique", chat_id=[1, 2])
+        chats = {h.chat_id for h in hits}
+        assert chats == {1, 2}
+
+    def test_answer_with_empty_allow_list_does_not_search(self, conn, fake_embed):
+        seed(conn, [(1, 1, "secret from other chat")], chat_id=1)
+        index.reindex(conn, progress=False)
+        result = run_answer(conn, "secret", chat_id=[], llm=FakeLLM())
+        assert result.hits == []
+        assert "couldn't find" in result.text.lower()
+
+
+class TestAnswerFlushesTail:
+    def test_unwindowed_message_is_invisible_until_flush(self, conn, fake_embed):
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+        last_ts = STREAM[-1][1]
+        seed(conn, [(200, last_ts + 5, "pangolin sighting")])
+
+        assert conn.execute(
+            "SELECT count(*) FROM windows WHERE chat_id=1 AND last_msg>=200"
+        ).fetchone()[0] == 0
+        # The new text is not in any window yet, so it cannot appear in hits.
+        # (Dummy zero vectors still rank existing windows; we care about the text.)
+        hits = retrieve.search(conn, "pangolin sighting", chat_id=1)
+        assert all("pangolin" not in h.text.lower() for h in hits)
+
+        result = run_answer(conn, "pangolin sighting", chat_id=1, llm=FakeLLM())
+        assert any("pangolin" in h.text.lower() for h in result.hits)
+
+
+class TestLiveEdits:
+    def _window_text_for(self, conn, msg_id):
+        return conn.execute(
+            "SELECT text FROM windows WHERE chat_id=1 AND first_msg<=? AND last_msg>=?",
+            (msg_id, msg_id),
+        ).fetchone()["text"]
+
+    def test_refresh_if_in_tail_rebuilds_last_window(self, conn, fake_embed):
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+        last_id = STREAM[-1][0]
+        conn.execute(
+            "UPDATE messages SET text='EDITED_TAIL' WHERE chat_id=1 AND msg_id=?", (last_id,)
+        )
+        conn.commit()
+        assert live.refresh_if_in_tail(conn, 1, last_id) is True
+        assert "EDITED_TAIL" in self._window_text_for(conn, last_id)
+
+    def test_refresh_skips_old_messages(self, conn, fake_embed):
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+        conn.execute("UPDATE messages SET text='EDITED_OLD' WHERE chat_id=1 AND msg_id=2")
+        conn.commit()
+        assert live.refresh_if_in_tail(conn, 1, 2) is False
+        assert "EDITED_OLD" not in self._window_text_for(conn, 2)
+
+    def test_force_update_refreshes_tail_without_new_messages(self, conn, fake_embed):
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+        last_id = STREAM[-1][0]
+        conn.execute(
+            "UPDATE messages SET text='FORCED' WHERE chat_id=1 AND msg_id=?", (last_id,)
+        )
+        conn.commit()
+        fake_embed.clear()
+        result = index.update(conn)  # no new messages, lookback 0
+        assert result["windows"] == 0
+        assert "FORCED" not in self._window_text_for(conn, last_id)
+
+        result = index.update(conn, force=True)
+        assert result["windows"] > 0
+        assert "FORCED" in self._window_text_for(conn, last_id)
+

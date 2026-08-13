@@ -10,6 +10,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from . import config, retrieve
+from .ingest import live
 from .llm import LLM, get_llm
 
 SYSTEM = """You answer questions about a group chat, using ONLY the excerpts provided.
@@ -85,9 +86,17 @@ def build_context(hits: list[retrieve.Hit]) -> str:
 def answer(
     conn: sqlite3.Connection,
     question: str,
-    chat_id: int | None = None,
+    chat_id: retrieve.ChatId = None,
     llm: LLM | None = None,
 ) -> Answer:
+    chats = retrieve.normalize_chat_ids(chat_id)
+    if chats is not None and not chats:
+        return Answer("I couldn't find that in the chat history.", [])
+
+    # Live messages are in FTS immediately but only join windows after the tail
+    # is re-windowed. Flush first so "what did we just say" sees the open tail.
+    live.flush_tail(conn, chat_id)
+
     hits = retrieve.search(conn, question, chat_id)
     if not hits:
         return Answer("I couldn't find that in the chat history.", [])
