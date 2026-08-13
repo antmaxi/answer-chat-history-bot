@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from . import config, embed
+from . import config, embed, people
 from .timerange import TimeRange, parse_time_range
 
 # None = every chat; a tuple of ids is an allow-list (empty means no chats).
@@ -232,6 +232,7 @@ def search(
     top_k: int | None = None,
     now: datetime | None = None,
     time_range: TimeRange | None = None,
+    speaker: str | None = None,
 ) -> list[Hit]:
     chats = normalize_chat_ids(chat_id)
     if chats is not None and not chats:
@@ -240,9 +241,13 @@ def search(
 
     if time_range is None:
         time_range = parse_time_range(question, now)
+    if speaker is None:
+        speaker = people.parse_speaker(question, people.known_speakers(conn))
 
     top_k = top_k or config.TOP_K
-    pool = top_k * 8 if time_range else top_k * 4
+    pool = top_k * 4
+    if time_range or speaker:
+        pool = top_k * 8
 
     # Vector search carries more weight: most questions are paraphrases of what
     # was actually said. Keyword search earns its place on names, numbers and
@@ -277,6 +282,8 @@ def search(
         if allowed is not None and r["chat_id"] not in allowed:
             continue
         if time_range is not None and not time_range.overlaps(r["ts_start"], r["ts_end"]):
+            continue
+        if speaker and speaker.lower() not in (r["speakers"] or "").lower():
             continue
         hits.append(
             Hit(

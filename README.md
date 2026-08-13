@@ -115,15 +115,17 @@ python -m answerbot.bot
 ```
 
 In a group it answers when @mentioned or replied to. In a DM it answers if you
-belong to a chat it has indexed. New group messages are appended live and the
-tail is re-windowed every `LIVE_REINDEX_EVERY` messages. `/stats` and (for
-admins) `/reindex` are available.
+belong to a chat it has indexed — `/chats` lists those chats, `/chat N` focuses
+one, `/chat all` searches every chat you are in. New group messages are appended
+live; the tail is re-windowed every `LIVE_REINDEX_EVERY` messages, and every
+`LIVE_LOOKBACK_HOURS` the last couple of weeks are rebuilt so recent edits
+self-heal. `/stats` and (for admins) `/reindex` / `/reindex full` are available.
 
 ## Switching to a local model
 
 Answer generation is the only Claude call; embeddings are already local. Set
-`LLM_PROVIDER=ollama` and `ANSWER_MODEL` to a pulled model — see
-[answerbot/llm.py](answerbot/llm.py) `OllamaLLM`.
+`LLM_PROVIDER=ollama`, `ANSWER_MODEL` to a pulled model, and optionally
+`OLLAMA_HOST` / `LLM_TIMEOUT` — see [answerbot/llm.py](answerbot/llm.py).
 
 ## Trying it without real data
 
@@ -137,7 +139,8 @@ DB_PATH=/tmp/demo.db python -m answerbot.search "why was the morning meeting mov
 ## Configuration
 
 All optional, via environment or a `.env` file — see [answerbot/config.py](answerbot/config.py).
-The ones worth knowing: `DB_PATH`, `EMBED_MODEL`, `WINDOW_GAP_SECONDS`, `TOP_K`.
+The ones worth knowing: `DB_PATH`, `EMBED_MODEL`, `WINDOW_GAP_SECONDS`, `TOP_K`,
+`ANSWER_COOLDOWN_SECONDS`, `LIVE_LOOKBACK_HOURS`.
 
 ## Tests
 

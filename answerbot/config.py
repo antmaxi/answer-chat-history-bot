@@ -48,6 +48,11 @@ ANSWER_MODEL = os.getenv("ANSWER_MODEL", "claude-sonnet-5")
 ANSWER_COOLDOWN_SECONDS = int(os.getenv("ANSWER_COOLDOWN_SECONDS", "8"))
 # Persist each question + retrieved window ids locally. "0" / "false" turns it off.
 QUERY_LOG = os.getenv("QUERY_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+# How often the live bot re-windows recent history to pick up edits. 0 disables.
+LIVE_LOOKBACK_HOURS = float(os.getenv("LIVE_LOOKBACK_HOURS", "6"))
+MEMBERSHIP_CACHE_SECONDS = float(os.getenv("MEMBERSHIP_CACHE_SECONDS", "300"))
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

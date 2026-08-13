@@ -15,6 +15,7 @@ windows through this map (see index.render), so resolved names replace the
 labels after a reindex.
 """
 
+import re
 import sqlite3
 import time
 
@@ -90,6 +91,46 @@ def ensure_aliases(conn: sqlite3.Connection, sender_ids) -> None:
 
 def alias_map(conn: sqlite3.Connection) -> dict[int, int]:
     return {r["sender_id"]: r["ordinal"] for r in conn.execute("SELECT sender_id, ordinal FROM aliases")}
+
+
+def known_speakers(conn: sqlite3.Connection) -> list[str]:
+    """Display names we might see in a 'what did X say' question, longest first."""
+    names: set[str] = set()
+    for (n,) in conn.execute("SELECT display_name FROM people WHERE display_name != ''"):
+        names.add(n)
+    for (n,) in conn.execute(
+        "SELECT DISTINCT sender FROM messages WHERE sender IS NOT NULL AND sender != ''"
+    ):
+        names.add(n)
+    return sorted(names, key=lambda s: (-len(s), s.lower()))
+
+
+_SPEAKER_CUE = re.compile(
+    r"(?i)\b(did|said|says|told|tell|from|by|according to)\b"
+)
+
+
+def parse_speaker(question: str, names: list[str]) -> str | None:
+    """If the question asks what a known person said, return that name.
+
+    Longest name wins so 'Anna Maria' is preferred over 'Anna'. Names shorter
+    than 3 characters are ignored — they collide with common words.
+    """
+    if not _SPEAKER_CUE.search(question):
+        return None
+    q = question.lower()
+    for name in names:
+        if len(name) < 3:
+            continue
+        n = re.escape(name.lower())
+        if re.search(
+            rf"(?i)\b(?:what |who )?did {n} (?:say|tell|ask)\b"
+            rf"|\b{n} (?:said|says|told|wrote)\b"
+            rf"|\b(?:from|by|according to) {n}\b",
+            q,
+        ):
+            return name
+    return None
 
 
 def speaker_label(

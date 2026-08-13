@@ -34,6 +34,7 @@ CASES: tuple[Case, ...] = (
     Case("dentist in Tbilisi", ("Kvaratskhelia",)),
     Case("budget for the offsite", ("5000",)),
     Case("when is the ski trip", ("Feb 14-17",)),
+    Case("what did Nino say about standup", ("10:30",)),
     Case("why was the morning meeting moved", ("10:30",), keyword_ok=False),
 )
 

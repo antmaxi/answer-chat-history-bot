@@ -1,6 +1,7 @@
 """SQLite storage: schema, connection helper, and the FTS triggers."""
 
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -79,8 +80,11 @@ CREATE TABLE IF NOT EXISTS aliases (
   ordinal   INTEGER NOT NULL UNIQUE
 );
 
--- Query log: one row per answered question, for debugging retrieval without
--- scraping Telegram. Disabled with QUERY_LOG=0.
+-- DM: last chat the user chose with /chat, so multi-chat search stays scoped.
+CREATE TABLE IF NOT EXISTS dm_prefs (
+  user_id INTEGER PRIMARY KEY,
+  chat_id INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS query_log (
   id          INTEGER PRIMARY KEY,
   ts          INTEGER NOT NULL,
@@ -106,7 +110,36 @@ def connect(path: Path | str | None = None, check_same_thread: bool = True) -> s
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    migrate(conn)
     return conn
+
+
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> bool:
+    """ADD COLUMN if it is missing. Returns True if the column was added.
+
+    Table/column names must be simple identifiers — this is a migration helper,
+    not a general SQL builder.
+    """
+    if not _IDENT.match(table) or not _IDENT.match(column):
+        raise ValueError("table and column must be simple identifiers")
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column in cols:
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    conn.commit()
+    return True
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Apply additive schema changes that CREATE IF NOT EXISTS cannot cover.
+
+    New tables go in SCHEMA. New columns on existing tables go here via
+    ensure_column, so a DB created on an older commit still opens.
+    """
+    return
 
 
 def stats(conn: sqlite3.Connection) -> dict:
@@ -148,4 +181,21 @@ def log_query(
             model,
         ),
     )
+    conn.commit()
+
+
+def get_dm_chat(conn: sqlite3.Connection, user_id: int) -> int | None:
+    row = conn.execute("SELECT chat_id FROM dm_prefs WHERE user_id=?", (user_id,)).fetchone()
+    return int(row[0]) if row else None
+
+
+def set_dm_chat(conn: sqlite3.Connection, user_id: int, chat_id: int | None) -> None:
+    if chat_id is None:
+        conn.execute("DELETE FROM dm_prefs WHERE user_id=?", (user_id,))
+    else:
+        conn.execute(
+            """INSERT INTO dm_prefs (user_id, chat_id) VALUES (?, ?)
+               ON CONFLICT (user_id) DO UPDATE SET chat_id=excluded.chat_id""",
+            (user_id, chat_id),
+        )
     conn.commit()

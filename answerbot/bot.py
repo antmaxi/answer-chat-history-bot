@@ -14,12 +14,14 @@ import re
 import threading
 import time
 
+from collections import defaultdict, deque
+
 from aiogram import Bot, Dispatcher, F, html
 from aiogram.enums import ChatType
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from . import answer, config, cooldown, db, embed, index, people, retrieve
+from . import answer, config, cooldown, db, embed, followup, index, membership, people, retrieve
 from .ingest import live
 
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +36,9 @@ _db_lock = threading.Lock()
 # search can proceed while SentenceTransformer is running.
 _index_lock = asyncio.Lock()
 _answers = cooldown.Cooldown(config.ANSWER_COOLDOWN_SECONDS)
+_members = membership.MembershipCache(config.MEMBERSHIP_CACHE_SECONDS)
+_history: dict[tuple[int, int], deque[str]] = defaultdict(lambda: deque(maxlen=4))
+_titles: dict[int, str] = {}
 
 
 async def _db(fn, *args):
@@ -77,6 +82,30 @@ async def _background_index(chat_id: int, *, force: bool = False) -> None:
         await index_chats(chat_id, force=force)
     except Exception:
         log.exception("background reindex failed chat_id=%s", chat_id)
+
+
+async def _periodic_lookback() -> None:
+    hours = config.LIVE_LOOKBACK_HOURS
+    if hours <= 0:
+        return
+    while True:
+        await asyncio.sleep(hours * 3600)
+        log.info("periodic lookback: last %s days", config.UPDATE_LOOKBACK_DAYS)
+        try:
+            await index_chats(None, lookback=config.UPDATE_LOOKBACK_DAYS)
+        except Exception:
+            log.exception("periodic lookback failed")
+
+
+async def _chat_title(bot: Bot, chat_id: int) -> str:
+    if chat_id in _titles:
+        return _titles[chat_id]
+    try:
+        chat = await bot.get_chat(chat_id)
+        _titles[chat_id] = chat.title or str(chat_id)
+    except Exception:
+        _titles[chat_id] = str(chat_id)
+    return _titles[chat_id]
 
 
 def format_answer(result: answer.Answer) -> str:
@@ -123,15 +152,35 @@ async def indexed_chats_for_user(bot: Bot, user_id: int) -> list[int]:
     """Indexed chats this user is currently a member of.
 
     This is the DM allow-list: search must not run over any other chat_id.
+    Membership is cached so a busy DM does not call getChatMember on every ask.
     """
     allowed: list[int] = []
     for chat_id in sorted(await indexed_chats()):
+        cached = _members.get(user_id, chat_id)
+        if cached is True:
+            allowed.append(chat_id)
+            continue
+        if cached is False:
+            continue
         try:
             member = await bot.get_chat_member(chat_id, user_id)
-            if member.status not in ("left", "kicked"):
-                allowed.append(chat_id)
+            ok = member.status not in ("left", "kicked")
         except Exception:
-            continue  # bot may not be an admin there, or the chat is gone
+            ok = False
+        _members.remember(user_id, chat_id, ok)
+        if ok:
+            allowed.append(chat_id)
+    return allowed
+
+
+async def dm_scope(bot: Bot, user_id: int) -> list[int]:
+    """Allow-list for a DM, honoring /chat if it still points at a membership."""
+    allowed = await indexed_chats_for_user(bot, user_id)
+    pref = await _db(db.get_dm_chat, conn, user_id)
+    if pref is not None and pref in allowed:
+        return [pref]
+    if pref is not None:
+        await _db(db.set_dm_chat, conn, user_id, None)
     return allowed
 
 
@@ -149,19 +198,29 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         return
     _answers.touch((user_id, message.chat.id))
 
+    key = (message.chat.id, user_id)
+    prior = _history[key][-1] if _history[key] else None
+    force = False
+    reply = message.reply_to_message
+    if reply and reply.from_user:
+        me = await message.bot.me()
+        force = reply.from_user.id == me.id
+    search_q = followup.rewrite(question, prior, force=force)
+
     thinking = await message.reply("…")
     t0 = time.monotonic()
     try:
         # Encode any unwindowed tail off the DB lock, then search under it,
         # then call the LLM without holding either lock.
         await index_chats(chat_id)
-        hits = await _db(retrieve.search, conn, question, chat_id)
+        hits = await _db(retrieve.search, conn, search_q, chat_id)
 
         def complete():
             return answer.complete_answer(question, hits)
 
         result = await asyncio.to_thread(complete)
         await _db(answer._record, conn, question, chat_id, result, t0, None)
+        _history[key].append(question)
         await thinking.edit_text(format_answer(result), parse_mode="HTML", disable_web_page_preview=True)
     except Exception:
         log.exception("failed to answer")
@@ -175,7 +234,7 @@ async def cmd_help(message: Message) -> None:
     await message.reply(
         "I answer questions from this chat's history.\n"
         "In a group, @mention me or reply to my messages. In DM, just ask.\n"
-        "Commands: /ask <question>, /stats"
+        "Commands: /ask <question>, /stats, /chats, /chat"
         "\nAdmins: /reindex (recent), /reindex full, /resolve (fix member names)"
     )
 
@@ -183,13 +242,62 @@ async def cmd_help(message: Message) -> None:
 @dp.message(Command("ask"))
 async def cmd_ask(message: Message, command, bot: Bot) -> None:
     if message.chat.type == ChatType.PRIVATE:
-        allowed = await indexed_chats_for_user(bot, message.from_user.id)
+        allowed = await dm_scope(bot, message.from_user.id)
         if not allowed:
             await message.reply("You need to be a member of a chat I've indexed to ask me things.")
             return
         await respond(message, command.args or "", allowed)
         return
     await respond(message, command.args or "", message.chat.id)
+
+
+@dp.message(Command("chats"))
+async def cmd_chats(message: Message, bot: Bot) -> None:
+    if message.chat.type != ChatType.PRIVATE:
+        await message.reply("Use /chats in a DM to pick which group I search.")
+        return
+    allowed = await indexed_chats_for_user(bot, message.from_user.id)
+    if not allowed:
+        await message.reply("You need to be a member of a chat I've indexed.")
+        return
+    pref = await _db(db.get_dm_chat, conn, message.from_user.id)
+    lines = []
+    for i, cid in enumerate(allowed, 1):
+        mark = " ←" if cid == pref else ""
+        lines.append(f"{i}. {await _chat_title(bot, cid)} (`{cid}`){mark}")
+    hint = "All your chats (use /chat N to focus)." if pref not in allowed else "Use /chat all to search every chat."
+    await message.reply("Indexed chats you can ask about:\n" + "\n".join(lines) + "\n\n" + hint)
+
+
+@dp.message(Command("chat"))
+async def cmd_chat(message: Message, command, bot: Bot) -> None:
+    if message.chat.type != ChatType.PRIVATE:
+        await message.reply("Use /chat in a DM.")
+        return
+    allowed = await indexed_chats_for_user(bot, message.from_user.id)
+    if not allowed:
+        await message.reply("You need to be a member of a chat I've indexed.")
+        return
+    arg = (command.args or "").strip()
+    if not arg:
+        await message.reply("Pick a number from /chats, a chat id, or /chat all.")
+        return
+    if arg.lower() in ("all", "any", "*"):
+        await _db(db.set_dm_chat, conn, message.from_user.id, None)
+        await message.reply("I'll search all your indexed chats.")
+        return
+    chosen = None
+    if arg.lstrip("-").isdigit():
+        n = int(arg)
+        if 1 <= n <= len(allowed):
+            chosen = allowed[n - 1]
+        elif n in allowed:
+            chosen = n
+    if chosen is None:
+        await message.reply("Pick a number from /chats, a chat id, or /chat all.")
+        return
+    await _db(db.set_dm_chat, conn, message.from_user.id, chosen)
+    await message.reply(f"Searching {await _chat_title(bot, chosen)}.")
 
 
 @dp.message(Command("stats"))
@@ -321,7 +429,7 @@ async def on_group_edit(message: Message) -> None:
 async def on_private_message(message: Message, bot: Bot) -> None:
     if not message.text:
         return
-    allowed = await indexed_chats_for_user(bot, message.from_user.id)
+    allowed = await dm_scope(bot, message.from_user.id)
     if not allowed:
         await message.reply("You need to be a member of a chat I've indexed to ask me things.")
         return
@@ -333,6 +441,7 @@ async def main() -> None:
         raise SystemExit("set TELEGRAM_BOT_TOKEN (see .env.example)")
     bot = Bot(config.TELEGRAM_BOT_TOKEN)
     log.info("starting polling")
+    asyncio.create_task(_periodic_lookback())
     await dp.start_polling(bot)
 
 
