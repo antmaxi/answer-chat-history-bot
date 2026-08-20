@@ -328,3 +328,72 @@ class TestAdminErrorHandler:
         h = AdminErrorHandler(min_interval=0)
         rec = _error_record("failed to notify admin 1 (Bot is up)", exc=False)
         assert h.prepare(rec) is None
+
+
+def _drop_log_handlers():
+    from answerbot import logconfig
+
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if getattr(h, logconfig._STREAM_MARK, False) or getattr(h, logconfig._FILE_MARK, None):
+            h.close()
+            root.removeHandler(h)
+
+
+class TestLogconfig:
+    def test_writes_timestamped_file(self, tmp_path, monkeypatch):
+        from answerbot import logconfig
+
+        path = tmp_path / "answerbot.log"
+        monkeypatch.setattr(config, "LOG_PATH", path)
+        monkeypatch.setattr(config, "LOG_LEVEL", "INFO")
+        _drop_log_handlers()
+        try:
+            logconfig.setup()
+            logging.getLogger("answerbot").error("disk full")
+            text = path.read_text(encoding="utf-8")
+        finally:
+            _drop_log_handlers()
+        assert "ERROR answerbot: disk full" in text
+        assert text.split(" ", 1)[0].count("-") == 2  # YYYY-MM-DD
+
+    def test_setup_is_idempotent(self, tmp_path, monkeypatch):
+        from answerbot import logconfig
+
+        path = tmp_path / "answerbot.log"
+        monkeypatch.setattr(config, "LOG_PATH", path)
+        _drop_log_handlers()
+        try:
+            logconfig.setup()
+            logconfig.setup()
+            files = [
+                h for h in logging.getLogger().handlers
+                if getattr(h, logconfig._FILE_MARK, None) == str(path)
+            ]
+        finally:
+            _drop_log_handlers()
+        assert len(files) == 1
+
+    def test_off_skips_the_file(self, tmp_path, monkeypatch):
+        from answerbot import logconfig
+
+        monkeypatch.setattr(config, "LOG_PATH", None)
+        _drop_log_handlers()
+        try:
+            logconfig.setup()
+            n_files = sum(1 for h in logging.getLogger().handlers if getattr(h, logconfig._FILE_MARK, None))
+        finally:
+            _drop_log_handlers()
+        assert n_files == 0
+
+    def test_asyncio_handler_logs_exception(self, caplog):
+        from answerbot import logconfig
+
+        caplog.set_level(logging.ERROR, logger="answerbot")
+
+        try:
+            raise RuntimeError("loop boom")
+        except RuntimeError as exc:
+            logconfig.asyncio_handler(None, {"message": "Task exception", "exception": exc})
+        assert "Task exception" in caplog.text
+        assert "loop boom" in caplog.text

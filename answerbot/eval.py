@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import config, db, index, retrieve
+from . import config, db, index, logconfig, retrieve
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,7 @@ def main() -> None:
     import sys
     from pathlib import Path
 
+    logconfig.setup()
     ap = argparse.ArgumentParser(description="Measure retrieval success@k on the golden set")
     ap.add_argument("--fixture", action="store_true", help="index tests/make_fixture.py into a temp DB")
     ap.add_argument("-k", type=int, default=None)

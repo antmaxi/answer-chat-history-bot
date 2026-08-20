@@ -19,7 +19,7 @@ import re
 import sqlite3
 import time
 
-from . import config
+from . import config, logconfig
 
 # Higher wins; a live name won't overwrite one you set by hand.
 _TRUST = {"live": 0, "api": 1, "manual": 2}
@@ -193,6 +193,7 @@ def main() -> None:
 
     from . import db
 
+    logconfig.setup()
     ap = argparse.ArgumentParser(description="Manage real display names for chat members")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--template", metavar="FILE", help="write an editable name template (JSON)")

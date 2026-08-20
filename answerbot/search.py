@@ -7,10 +7,11 @@ fix it downstream, and debugging it through Telegram is miserable.
 import argparse
 import textwrap
 
-from . import db, retrieve
+from . import db, logconfig, retrieve
 
 
 def main() -> None:
+    logconfig.setup()
     ap = argparse.ArgumentParser(description="Search indexed chat history")
     ap.add_argument("question", nargs="+")
     ap.add_argument("--chat-id", type=int, default=None)

@@ -22,11 +22,11 @@ from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from . import adminlog, answer, config, cooldown, db, embed, followup, index, membership, people, retrieve
+from . import adminlog, answer, config, cooldown, db, embed, followup, index, logconfig, membership, people, retrieve
 from .ingest import live
 from .ingest.export import bot_api_candidates
 
-logging.basicConfig(level=logging.INFO)
+logconfig.setup()
 log = logging.getLogger("answerbot")
 
 dp = Dispatcher()
@@ -475,8 +475,10 @@ async def _notify_admins(bot: Bot, text: str) -> None:
 
 async def _on_startup(bot: Bot) -> None:
     log.info("bot is up")
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(logconfig.asyncio_handler)
     await _align_export_chat_ids(bot)
-    _admin_errors.attach(asyncio.get_running_loop(), lambda text: _notify_admins(bot, text))
+    _admin_errors.attach(loop, lambda text: _notify_admins(bot, text))
     await _notify_admins(bot, "Bot is up")
 
 

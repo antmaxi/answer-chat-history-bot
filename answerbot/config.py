@@ -9,6 +9,15 @@ load_dotenv()
 
 DB_PATH = Path(os.getenv("DB_PATH", "answerbot.db"))
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+_raw_log_path = os.getenv("LOG_PATH")
+if _raw_log_path is None:
+    LOG_PATH = DB_PATH.with_name("answerbot.log")
+elif _raw_log_path.strip().lower() in ("", "0", "false", "no", "off", "none"):
+    LOG_PATH = None
+else:
+    LOG_PATH = Path(_raw_log_path.strip())
+
 EMBED_MODEL = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-small")
 EMBED_DIM = int(os.getenv("EMBED_DIM", "384"))
 

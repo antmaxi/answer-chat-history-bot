@@ -11,6 +11,7 @@ result.json
 *_export_*.json
 /data/
 .env
+*.log
 .idea/
 
 # C extensions

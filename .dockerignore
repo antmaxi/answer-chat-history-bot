@@ -18,6 +18,7 @@ data
 *.db
 *.db-wal
 *.db-shm
+*.log
 result.json
 *_export_*.json
 docs

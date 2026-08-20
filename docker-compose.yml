@@ -9,6 +9,7 @@ services:
         required: false
     environment:
       DB_PATH: /data/answerbot.db
+      LOG_PATH: /data/answerbot.log
       HF_HOME: /opt/hf
     volumes:
       - ./data:/data

@@ -171,8 +171,9 @@ DB_PATH=/tmp/demo.db python -m answerbot.search "why was the morning meeting mov
 ## Configuration
 
 All optional, via environment or a `.env` file — see [answerbot/config.py](answerbot/config.py).
-The ones worth knowing: `DB_PATH`, `EMBED_MODEL`, `WINDOW_GAP_SECONDS`, `TOP_K`,
-`ANSWER_COOLDOWN_SECONDS`, `LIVE_LOOKBACK_HOURS`.
+The ones worth knowing: `DB_PATH`, `LOG_LEVEL`, `LOG_PATH`, `EMBED_MODEL`, `WINDOW_GAP_SECONDS`, `TOP_K`,
+`ANSWER_COOLDOWN_SECONDS`, `LIVE_LOOKBACK_HOURS`. Logs go to stderr and a rotating
+`answerbot.log` next to the database (`LOG_PATH=off` for stderr only).
 
 ## Tests
 

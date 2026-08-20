@@ -10,7 +10,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
-from . import config, db, retrieve
+from . import config, db, logconfig, retrieve
 from .ingest import live
 from .llm import LLM, get_llm
 
@@ -137,6 +137,7 @@ def main() -> None:
 
     from . import db
 
+    logconfig.setup()
     ap = argparse.ArgumentParser(description="Answer a question from indexed history")
     ap.add_argument("question", nargs="+")
     ap.add_argument("--chat-id", type=int, default=None)

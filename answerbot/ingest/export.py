@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from .. import db
+from .. import db, logconfig
 
 # Service messages (joins, pins, calls) carry no conversational content.
 SKIP_TYPES = {"service"}
@@ -171,6 +171,7 @@ def load(conn: sqlite3.Connection, path: Path | str) -> dict:
 def main() -> None:
     import argparse
 
+    logconfig.setup()
     ap = argparse.ArgumentParser(description="Load a Telegram JSON export")
     ap.add_argument("path", help="path to result.json")
     args = ap.parse_args()

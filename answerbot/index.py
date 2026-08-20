@@ -9,7 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import config, db, embed, people, retrieve
+from . import config, db, embed, logconfig, people, retrieve
 
 
 def render(
@@ -292,6 +292,7 @@ def update(
 def main() -> None:
     import argparse
 
+    logconfig.setup()
     ap = argparse.ArgumentParser(description="Build conversation windows and embeddings")
     ap.add_argument("--chat-id", type=int, default=None)
     ap.add_argument(

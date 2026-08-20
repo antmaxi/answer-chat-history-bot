@@ -189,7 +189,8 @@ python -m answerbot.eval --fixture
 ## Stack
 
 Python 3.11+, `aiogram` 3.x, `anthropic`, `google-genai`, `sentence-transformers`, `numpy`,
-stdlib `sqlite3`. Config via `.env` — see `.env.example`. `Dockerfile` /
+stdlib `sqlite3`. Config via `.env` — see `.env.example`. Logs go to stderr and a
+rotating `answerbot.log` next to the DB. `Dockerfile` /
 `docker-compose.yml` wrap the same process (CPU torch, SQLite on a volume).
 
 ## Known limits
