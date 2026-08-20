@@ -27,11 +27,15 @@ docker compose run --rm bot python -m answerbot.index
 docker compose up -d
 ```
 
-SQLite lives at `data/answerbot.db`. Stop the bot (`docker compose stop`) before
-a bulk export or `index --update` so two writers don't share the file. Other
-commands (`search`, `answer`, `people`, `index --update`) are the same
-`docker compose run --rm bot python -m answerbot…` form, with paths under
-`/data`. Ollama on the host: `OLLAMA_HOST=http://host.docker.internal:11434`.
+SQLite lives at `data/answerbot.db`. If you already indexed locally, copy
+`answerbot.db` into `data/` before the first `up`. The entrypoint chowns
+`data/` to the container user so a root-created bind mount still works.
+
+Stop the bot (`docker compose stop`) before a bulk export or `index --update`
+so two writers don't share the file. Other commands (`search`, `answer`,
+`people`, `index --update`) are the same `docker compose run --rm bot python -m
+answerbot…` form, with paths under `/data`. Ollama on the host:
+`OLLAMA_HOST=http://host.docker.internal:11434`.
 
 ## Usage
 

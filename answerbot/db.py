@@ -105,7 +105,14 @@ def connect(path: Path | str | None = None, check_same_thread: bool = True) -> s
     with check_same_thread=False and serializes access with its own lock — see
     bot.py. Single-threaded callers (the CLIs) keep the default guard.
     """
-    conn = sqlite3.connect(path or config.DB_PATH, check_same_thread=check_same_thread)
+    db_path = Path(path or config.DB_PATH)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
+    except sqlite3.OperationalError as e:
+        raise sqlite3.OperationalError(
+            f"cannot open {db_path} ({e}); is the directory writable?"
+        ) from e
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

@@ -31,7 +31,15 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 RUN useradd --create-home --uid 1000 answerbot \
     && chown -R answerbot:answerbot /app /data /opt/hf
 
-USER answerbot
-VOLUME ["/data"]
+# gosu is a late layer so a code/entrypoint change does not bust the torch cache.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && gosu nobody true
 
+VOLUME ["/data"]
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["python", "-m", "answerbot.bot"]
+
