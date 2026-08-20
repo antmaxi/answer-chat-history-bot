@@ -9,6 +9,7 @@ __pycache__/
 *.db-shm
 result.json
 *_export_*.json
+/data/
 .env
 .idea/
 

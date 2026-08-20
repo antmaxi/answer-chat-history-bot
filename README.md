@@ -13,6 +13,26 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
+## Docker
+
+Optional. Same single-process app, with CPU torch and the default embed model
+already in the image — useful for running the bot without a venv. Copy
+`.env.example` to `.env` and fill in the keys you need first.
+
+```bash
+mkdir -p data
+# put the Telegram export at data/result.json, then:
+docker compose run --rm bot python -m answerbot.ingest.export /data/result.json
+docker compose run --rm bot python -m answerbot.index
+docker compose up -d
+```
+
+SQLite lives at `data/answerbot.db`. Stop the bot (`docker compose stop`) before
+a bulk export or `index --update` so two writers don't share the file. Other
+commands (`search`, `answer`, `people`, `index --update`) are the same
+`docker compose run --rm bot python -m answerbot…` form, with paths under
+`/data`. Ollama on the host: `OLLAMA_HOST=http://host.docker.internal:11434`.
+
 ## Usage
 
 Export the chat from Telegram Desktop (chat menu → Export chat history → format
@@ -114,6 +134,8 @@ bot uses it too. Caveat: this anonymizes the *speaker label* only — message
 ```bash
 python -m answerbot.bot
 ```
+
+Or `docker compose up -d` if you followed [Docker](#docker) above.
 
 In a group it answers when @mentioned or replied to. In a DM it answers if you
 belong to a chat it has indexed — `/chats` lists those chats, `/chat N` focuses

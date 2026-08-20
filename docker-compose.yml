@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DB_PATH: /data/answerbot.db
+      HF_HOME: /opt/hf
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
