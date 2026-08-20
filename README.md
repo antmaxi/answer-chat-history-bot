@@ -128,7 +128,9 @@ bot uses it too. Caveat: this anonymizes the *speaker label* only — message
 2. **Turn privacy mode OFF** (BotFather → Bot Settings → Group Privacy), or the
    bot receives no group messages to read or index.
 3. Set `TELEGRAM_BOT_TOKEN`, `ADMIN_USER_IDS` (your numeric Telegram user id),
-   and an LLM key (`ANTHROPIC_API_KEY` or `GEMINI_API_KEY`) in `.env`.
+   and an LLM key (`ANTHROPIC_API_KEY` or `GEMINI_API_KEY`) in `.env`. Open a
+   DM with the bot so it can send you `Bot is up` / `Bot is down` when polling
+   starts or stops, and any logged error with its traceback.
 4. Add the bot to your group, then run:
 
 ```bash

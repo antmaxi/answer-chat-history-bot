@@ -99,6 +99,16 @@ class TestExportParsing:
     def test_ts_missing(self):
         assert parse_ts({}) is None
 
+    def test_supergroup_export_id_becomes_bot_api(self):
+        from answerbot.ingest.export import bot_api_chat_id, bot_api_candidates, desktop_ids_for
+
+        assert bot_api_chat_id({"id": 1495905530, "type": "private_supergroup"}) == -1001495905530
+        assert bot_api_chat_id({"id": -1001495905530, "type": "private_supergroup"}) == -1001495905530
+        assert bot_api_chat_id({"id": 555, "type": "private_group"}) == -555
+        assert bot_api_chat_id({"id": 42, "type": "personal_chat"}) == 42
+        assert desktop_ids_for(-1001495905530) == [1495905530]
+        assert bot_api_candidates(1495905530) == [1495905530, -1001495905530, -1495905530]
+
 
 class TestWindowing:
     def test_long_gap_splits(self):

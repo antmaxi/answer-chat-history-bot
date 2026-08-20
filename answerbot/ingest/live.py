@@ -14,7 +14,8 @@ from collections.abc import Sequence
 
 import sqlite3
 
-from .. import config, index, retrieve
+from .. import config, db, index, retrieve
+from .export import desktop_ids_for
 
 
 def add_message(
@@ -27,6 +28,10 @@ def add_message(
     text: str,
     reply_to: int | None = None,
 ) -> None:
+    for old in desktop_ids_for(chat_id):
+        if db.remap_chat_id(conn, old, chat_id):
+            retrieve.invalidate_cache()
+
     conn.execute(
         """INSERT INTO messages (chat_id, msg_id, reply_to, sender_id, sender, ts, text)
            VALUES (?, ?, ?, ?, ?, ?, ?)

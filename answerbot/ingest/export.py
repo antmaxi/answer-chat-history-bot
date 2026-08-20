@@ -11,8 +11,56 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
+from .. import db
+
 # Service messages (joins, pins, calls) carry no conversational content.
 SKIP_TYPES = {"service"}
+
+# Telegram Desktop writes the bare channel/group id. The Bot API encodes the
+# peer type in the number: `-100<id>` for supergroups/channels, `-id` for
+# basic groups. Personal chats already match.
+_CHANNEL_TYPES = {
+    "private_supergroup",
+    "public_supergroup",
+    "private_channel",
+    "public_channel",
+}
+_BASIC_GROUP_TYPES = {"private_group", "public_group", "group"}
+
+
+def bot_api_chat_id(export: dict) -> int:
+    """Map a Desktop JSON `id` onto the chat id the Bot API uses."""
+    raw = int(export["id"])
+    if raw < 0:
+        return raw
+    typ = str(export.get("type") or "")
+    if typ in _CHANNEL_TYPES or "supergroup" in typ or typ.endswith("channel"):
+        return int(f"-100{raw}")
+    if typ in _BASIC_GROUP_TYPES:
+        return -raw
+    return raw
+
+
+def desktop_ids_for(bot_api_id: int) -> list[int]:
+    """Desktop-export ids that might already be stored for this Bot API chat."""
+    text = str(bot_api_id)
+    aliases: list[int] = []
+    if text.startswith("-100") and len(text) > 4:
+        aliases.append(int(text[4:]))
+    elif bot_api_id < 0:
+        aliases.append(-bot_api_id)
+    return aliases
+
+
+def bot_api_candidates(stored_id: int) -> list[int]:
+    """Ids to try when resolving a stored chat against the Bot API.
+
+    The stored value itself is first (already-correct, or a personal chat).
+    Positive Desktop leftovers then try the supergroup and basic-group forms.
+    """
+    if stored_id < 0:
+        return [stored_id]
+    return [stored_id, int(f"-100{stored_id}"), -stored_id]
 
 
 def flatten_text(raw) -> str:
@@ -84,11 +132,15 @@ def iter_messages(export: dict, chat_id: int) -> Iterator[tuple]:
 
 def load_data(conn: sqlite3.Connection, export: dict, source: str = "export") -> dict:
     """Insert an already-parsed export. Safe to re-run: rows are upserted."""
-    chat_id = export.get("id")
-    if chat_id is None:
+    if export.get("id") is None:
         raise ValueError(f"{source}: no chat id in export — is this a result.json?")
 
-    rows = list(iter_messages(export, int(chat_id)))
+    raw_id = int(export["id"])
+    chat_id = bot_api_chat_id(export)
+    if raw_id != chat_id:
+        db.remap_chat_id(conn, raw_id, chat_id)
+
+    rows = list(iter_messages(export, chat_id))
     before = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
 
     conn.executemany(
@@ -118,8 +170,6 @@ def load(conn: sqlite3.Connection, path: Path | str) -> dict:
 
 def main() -> None:
     import argparse
-
-    from .. import db
 
     ap = argparse.ArgumentParser(description="Load a Telegram JSON export")
     ap.add_argument("path", help="path to result.json")

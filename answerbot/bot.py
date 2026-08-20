@@ -18,11 +18,13 @@ from collections import defaultdict, deque
 
 from aiogram import Bot, Dispatcher, F, html
 from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from . import answer, config, cooldown, db, embed, followup, index, membership, people, retrieve
+from . import adminlog, answer, config, cooldown, db, embed, followup, index, membership, people, retrieve
 from .ingest import live
+from .ingest.export import bot_api_candidates
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("answerbot")
@@ -39,6 +41,7 @@ _answers = cooldown.Cooldown(config.ANSWER_COOLDOWN_SECONDS)
 _members = membership.MembershipCache(config.MEMBERSHIP_CACHE_SECONDS)
 _history: dict[tuple[int, int], deque[str]] = defaultdict(lambda: deque(maxlen=4))
 _titles: dict[int, str] = {}
+_admin_errors = adminlog.AdminErrorHandler()
 
 
 async def _db(fn, *args):
@@ -146,6 +149,29 @@ async def indexed_chats() -> set[int]:
     return await _db(
         lambda: {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")}
     )
+
+
+async def _align_export_chat_ids(bot: Bot) -> None:
+    """Rewrite Desktop-export chat ids to the Bot API form Telegram will accept.
+
+    getChat / getChatMember need `-100<id>` for a supergroup. An export stored
+    under the bare positive id looks like a chat the bot has never joined.
+    """
+    for cid in sorted(await indexed_chats()):
+        resolved = None
+        for candidate in bot_api_candidates(cid):
+            try:
+                await bot.get_chat(candidate)
+            except Exception:
+                continue
+            resolved = candidate
+            break
+        if resolved is None or resolved == cid:
+            continue
+        log.info("aligning desktop chat_id %s -> Bot API %s", cid, resolved)
+        await _db(db.remap_chat_id, conn, cid, resolved)
+        retrieve.invalidate_cache()
+        _members.invalidate()
 
 
 async def indexed_chats_for_user(bot: Bot, user_id: int) -> list[int]:
@@ -434,6 +460,34 @@ async def on_private_message(message: Message, bot: Bot) -> None:
         await message.reply("You need to be a member of a chat I've indexed to ask me things.")
         return
     await respond(message, message.text, allowed)
+
+
+async def _notify_admins(bot: Bot, text: str) -> None:
+    """DM each admin. Telegram only delivers if they have already /start'd the bot."""
+    for uid in sorted(config.ADMIN_USER_IDS):
+        try:
+            await bot.send_message(uid, text)
+        except TelegramForbiddenError:
+            log.warning("admin %s has not started a chat with the bot; cannot send %r", uid, text)
+        except Exception:
+            log.warning("failed to notify admin %s (%s)", uid, text, exc_info=True)
+
+
+async def _on_startup(bot: Bot) -> None:
+    log.info("bot is up")
+    await _align_export_chat_ids(bot)
+    _admin_errors.attach(asyncio.get_running_loop(), lambda text: _notify_admins(bot, text))
+    await _notify_admins(bot, "Bot is up")
+
+
+async def _on_shutdown(bot: Bot) -> None:
+    log.info("bot is down")
+    await _notify_admins(bot, "Bot is down")
+    _admin_errors.detach()
+
+
+dp.startup.register(_on_startup)
+dp.shutdown.register(_on_shutdown)
 
 
 async def main() -> None:
