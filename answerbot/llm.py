@@ -1,8 +1,8 @@
 """LLM providers behind one small protocol.
 
 Only answer *generation* goes through here — embeddings are always local — so
-switching from Claude to a local Ollama model later touches this file and one
-config key, nothing else.
+switching from Claude to Gemini or a local Ollama model later touches this file
+and one config key, nothing else.
 """
 
 from typing import Protocol
@@ -32,6 +32,31 @@ class ClaudeLLM:
             messages=[{"role": "user", "content": user}],
         )
         return "".join(block.text for block in resp.content if block.type == "text").strip()
+
+
+class GeminiLLM:
+    def __init__(self, api_key: str | None = None, model: str | None = None):
+        from google import genai
+
+        self.client = genai.Client(
+            api_key=api_key or config.GEMINI_API_KEY,
+            http_options={"timeout": int(config.LLM_TIMEOUT * 1000)},
+        )
+        self.model = model or config.ANSWER_MODEL
+
+    def complete(self, system: str, user: str) -> str:
+        resp = self.client.models.generate_content(
+            model=self.model,
+            contents=user,
+            config={
+                "system_instruction": system,
+                "max_output_tokens": 1024,
+            },
+        )
+        text = (getattr(resp, "text", None) or "").strip()
+        if not text:
+            raise RuntimeError("Gemini returned no text")
+        return text
 
 
 class OllamaLLM:
@@ -73,6 +98,8 @@ def get_llm() -> LLM:
     provider = config.LLM_PROVIDER.lower()
     if provider == "claude":
         return ClaudeLLM()
+    if provider == "gemini":
+        return GeminiLLM()
     if provider == "ollama":
         return OllamaLLM()
     raise ValueError(f"unknown LLM_PROVIDER: {config.LLM_PROVIDER!r}")
