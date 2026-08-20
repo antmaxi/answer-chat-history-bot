@@ -1,4 +1,4 @@
-"""Follow-ups, speaker filters, membership cache, schema helpers, Ollama errors."""
+"""Follow-ups, speaker filters, membership cache, schema helpers, LLM errors."""
 
 import json
 import urllib.error
@@ -151,6 +151,48 @@ class TestSchemaMigrate:
         assert "dm_prefs" in tables
         assert "query_log" in tables
         assert "aliases" in tables
+
+
+class TestGemini:
+    def _llm(self, text):
+        from answerbot.llm import GeminiLLM
+
+        class FakeResp:
+            def __init__(self, value):
+                self.text = value
+
+        class FakeClient:
+            def __init__(self, value):
+                self._text = value
+                self.models = self
+                self.kwargs = None
+
+            def generate_content(self, **kw):
+                self.kwargs = kw
+                return FakeResp(self._text)
+
+        llm = GeminiLLM.__new__(GeminiLLM)
+        llm.model = "gemini-2.5-flash"
+        llm.client = FakeClient(text)
+        return llm
+
+    def test_complete_returns_text(self):
+        llm = self._llm("  hello  ")
+        assert llm.complete("system", "user") == "hello"
+        assert llm.client.kwargs["model"] == "gemini-2.5-flash"
+        assert llm.client.kwargs["contents"] == "user"
+        assert llm.client.kwargs["config"]["system_instruction"] == "system"
+
+    def test_empty_response_raises(self):
+        with pytest.raises(RuntimeError, match="no text"):
+            self._llm("  ").complete("s", "u")
+
+    def test_get_llm_dispatches(self, monkeypatch):
+        from answerbot import llm as llm_mod
+
+        monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+        monkeypatch.setattr(llm_mod, "GeminiLLM", lambda: "gemini-llm")
+        assert llm_mod.get_llm() == "gemini-llm"
 
 
 class TestOllamaErrors:

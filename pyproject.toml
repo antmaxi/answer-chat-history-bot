@@ -7,6 +7,7 @@ dependencies = [
     "sentence-transformers>=3.0",
     "numpy>=1.26",
     "anthropic>=0.40",
+    "google-genai>=1.0",
     "python-dotenv>=1.0",
     "aiogram>=3.13",
 ]

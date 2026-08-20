@@ -43,7 +43,12 @@ STOPWORD_DF_RATIO = float(os.getenv("STOPWORD_DF_RATIO", "0.25"))
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "claude")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-ANSWER_MODEL = os.getenv("ANSWER_MODEL", "claude-sonnet-5")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+_DEFAULT_ANSWER_MODEL = {
+    "claude": "claude-sonnet-5",
+    "gemini": "gemini-2.5-flash",
+}.get(LLM_PROVIDER.lower(), "claude-sonnet-5")
+ANSWER_MODEL = os.getenv("ANSWER_MODEL", _DEFAULT_ANSWER_MODEL)
 # Seconds a user must wait between answers in the same chat. 0 disables.
 ANSWER_COOLDOWN_SECONDS = int(os.getenv("ANSWER_COOLDOWN_SECONDS", "8"))
 # Persist each question + retrieved window ids locally. "0" / "false" turns it off.

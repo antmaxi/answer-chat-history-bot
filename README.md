@@ -26,7 +26,8 @@ python -m answerbot.answer "how much was the ski trip"  # grounded answer + sour
 ```
 
 `search` takes `-k N` for the number of results and `--full` to print whole
-windows instead of excerpts. `answer` needs `ANTHROPIC_API_KEY` set.
+windows instead of excerpts. `answer` needs `ANTHROPIC_API_KEY` (Claude) or
+`GEMINI_API_KEY` (Gemini) set, depending on `LLM_PROVIDER`.
 
 ### Topping up with new history
 
@@ -106,8 +107,8 @@ bot uses it too. Caveat: this anonymizes the *speaker label* only — message
 1. Create a bot with @BotFather and copy the token.
 2. **Turn privacy mode OFF** (BotFather → Bot Settings → Group Privacy), or the
    bot receives no group messages to read or index.
-3. Set `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, and `ADMIN_USER_IDS` (your
-   numeric Telegram user id) in `.env`.
+3. Set `TELEGRAM_BOT_TOKEN`, `ADMIN_USER_IDS` (your numeric Telegram user id),
+   and an LLM key (`ANTHROPIC_API_KEY` or `GEMINI_API_KEY`) in `.env`.
 4. Add the bot to your group, then run:
 
 ```bash
@@ -121,11 +122,18 @@ live; the tail is re-windowed every `LIVE_REINDEX_EVERY` messages, and every
 `LIVE_LOOKBACK_HOURS` the last couple of weeks are rebuilt so recent edits
 self-heal. `/stats` and (for admins) `/reindex` / `/reindex full` are available.
 
-## Switching to a local model
+## Switching the answer model
 
-Answer generation is the only Claude call; embeddings are already local. Set
-`LLM_PROVIDER=ollama`, `ANSWER_MODEL` to a pulled model, and optionally
-`OLLAMA_HOST` / `LLM_TIMEOUT` — see [answerbot/llm.py](answerbot/llm.py).
+Answer generation is the only cloud LLM call; embeddings are already local.
+Set `LLM_PROVIDER` and, if needed, `ANSWER_MODEL`:
+
+- **Claude** (default): `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY`
+- **Gemini**: `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` (defaults to
+  `gemini-2.5-flash`; override with `ANSWER_MODEL`)
+- **Ollama**: `LLM_PROVIDER=ollama`, `ANSWER_MODEL` to a pulled model, and
+  optionally `OLLAMA_HOST` / `LLM_TIMEOUT`
+
+See [answerbot/llm.py](answerbot/llm.py).
 
 ## Trying it without real data
 
