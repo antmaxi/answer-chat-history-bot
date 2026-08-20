@@ -1,6 +1,8 @@
 """Follow-ups, speaker filters, membership cache, schema helpers, LLM errors."""
 
 import json
+import logging
+import sys
 import urllib.error
 import urllib.request
 
@@ -10,6 +12,7 @@ import pytest
 from answerbot import config, db, followup, index, membership, people, retrieve
 from tests.make_fixture import build_export
 from answerbot.ingest.export import load_data
+from answerbot.ingest import live
 
 
 @pytest.fixture
@@ -153,6 +156,60 @@ class TestSchemaMigrate:
         assert "aliases" in tables
 
 
+class TestChatIdAlign:
+    def test_remap_moves_messages_and_windows(self, conn):
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (149, 1, 1, 'A', 'hi')"
+        )
+        conn.execute(
+            "INSERT INTO windows (chat_id, first_msg, last_msg, ts_start, ts_end, speakers, text) "
+            "VALUES (149, 1, 1, 1, 1, 'A', 'A: hi')"
+        )
+        conn.execute("INSERT INTO state (chat_id, last_indexed_msg_id) VALUES (149, 1)")
+        db.set_dm_chat(conn, 7, 149)
+        assert db.remap_chat_id(conn, 149, -100149) == 1
+        assert {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")} == {-100149}
+        assert conn.execute("SELECT chat_id FROM windows").fetchone()[0] == -100149
+        assert conn.execute("SELECT chat_id FROM state").fetchone()[0] == -100149
+        assert db.get_dm_chat(conn, 7) == -100149
+
+    def test_remap_merges_when_both_ids_exist(self, conn):
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (149, 1, 1, 'A', 'export')"
+        )
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (-100149, 1, 1, 'A', 'live')"
+        )
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (149, 2, 2, 'A', 'old only')"
+        )
+        assert db.remap_chat_id(conn, 149, -100149) == 2
+        rows = {
+            r[0]: r[1]
+            for r in conn.execute("SELECT msg_id, text FROM messages WHERE chat_id=-100149")
+        }
+        assert rows[1] == "live"
+        assert rows[2] == "old only"
+        assert conn.execute("SELECT count(*) FROM messages WHERE chat_id=149").fetchone()[0] == 0
+
+    def test_load_data_stores_bot_api_id(self, conn):
+        result = load_data(conn, build_export(), source="fixture")
+        assert result["chat_id"] == -1001234567890
+        chats = {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")}
+        assert chats == {-1001234567890}
+
+    def test_live_adopts_desktop_export_id(self, conn):
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) "
+            "VALUES (1234567890, 1, 1, 'A', 'export')"
+        )
+        live.add_message(conn, -1001234567890, 2, "A", 1, 2, "fresh")
+        chats = {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")}
+        assert chats == {-1001234567890}
+        n = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+        assert n == 2
+
+
 class TestGemini:
     def _llm(self, text):
         from answerbot.llm import GeminiLLM
@@ -222,3 +279,52 @@ class TestOllamaErrors:
         monkeypatch.setattr(urllib.request, "urlopen", boom)
         with pytest.raises(RuntimeError, match="Ollama"):
             OllamaLLM(model="x", host="http://localhost:9").complete("s", "u")
+
+
+def _error_record(msg="failed to answer", exc=True):
+    exc_info = None
+    if exc:
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            exc_info = sys.exc_info()
+    return logging.LogRecord(
+        "answerbot", logging.ERROR, __file__, 1, msg, (), exc_info
+    )
+
+
+class TestAdminErrorHandler:
+    def test_format_includes_message_and_traceback(self):
+        from answerbot.adminlog import format_error
+
+        text = format_error(_error_record())
+        assert "ERROR answerbot: failed to answer" in text
+        assert "RuntimeError: boom" in text
+
+    def test_format_truncates(self):
+        from answerbot.adminlog import format_error
+
+        text = format_error(_error_record("x" * 200), max_len=40)
+        assert len(text) == 40
+        assert text.endswith("…")
+
+    def test_prepare_coalesces_bursts(self):
+        from answerbot.adminlog import AdminErrorHandler
+
+        h = AdminErrorHandler(min_interval=60)
+        first = h.prepare(_error_record("one"))
+        assert first is not None and "one" in first
+        assert h.prepare(_error_record("two")) is None
+        assert h.prepare(_error_record("three")) is None
+        h._last_sent = 0
+        later = h.prepare(_error_record("four"))
+        assert later is not None
+        assert "four" in later
+        assert "2 more error(s) suppressed" in later
+
+    def test_notify_failure_is_not_forwarded(self):
+        from answerbot.adminlog import AdminErrorHandler
+
+        h = AdminErrorHandler(min_interval=0)
+        rec = _error_record("failed to notify admin 1 (Bot is up)", exc=False)
+        assert h.prepare(rec) is None

@@ -14,7 +14,8 @@ shipped. This document is the current design, not a build queue.
 | Interface | Group (@mention or reply) **and** private DM |
 | Storage | Single SQLite file — FTS5 for keyword, float32 blobs + numpy for vectors |
 
-No vector DB, no Postgres, no queue, no Docker. At ~100k messages a brute-force
+No vector DB, no Postgres, no queue. Docker is optional packaging of this same
+single-process app, not extra infrastructure. At ~100k messages a brute-force
 numpy dot product over 384-dim vectors is ~150 MB RAM and ~10 ms per query.
 Qdrant/pgvector stay off the table until that is actually slow. A rerank pass
 is the same: only if `python -m answerbot.eval` says hybrid RRF is not enough.
@@ -163,6 +164,10 @@ Anna & Nino:` headers; the bot turns `[W3]` into `t.me/c/<chat>/<msg_id>` links.
 - Commands: `/ask`, `/stats`, `/chats`, `/chat`; admins `/reindex` (lookback)
   and `/reindex full`, `/resolve` (Bot API names).
 - Per-user-per-chat cooldown (`ANSWER_COOLDOWN_SECONDS`); admins exempt.
+- Admins are DMed `Bot is up` / `Bot is down` on polling start and graceful
+  stop, and any `ERROR` log line (message + traceback). Error DMs are
+  coalesced (~20s) so a tight loop cannot flood Telegram. They must have
+  `/start`'d the bot first.
 
 ## Indexing
 
@@ -184,7 +189,8 @@ python -m answerbot.eval --fixture
 ## Stack
 
 Python 3.11+, `aiogram` 3.x, `anthropic`, `google-genai`, `sentence-transformers`, `numpy`,
-stdlib `sqlite3`. Config via `.env` — see `.env.example`.
+stdlib `sqlite3`. Config via `.env` — see `.env.example`. `Dockerfile` /
+`docker-compose.yml` wrap the same process (CPU torch, SQLite on a volume).
 
 ## Known limits
 

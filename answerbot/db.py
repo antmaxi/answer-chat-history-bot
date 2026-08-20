@@ -199,3 +199,57 @@ def set_dm_chat(conn: sqlite3.Connection, user_id: int, chat_id: int | None) -> 
             (user_id, chat_id),
         )
     conn.commit()
+
+
+def remap_chat_id(conn: sqlite3.Connection, old: int, new: int) -> int:
+    """Move every row from `old` chat_id to `new`. Returns how many messages moved.
+
+    Stitches a Telegram Desktop export (bare positive id) onto the Bot API id.
+    If both already exist, overlapping message ids keep the destination row
+    (live text wins); windows from both sides are kept so embeddings survive.
+    """
+    if old == new:
+        return 0
+    existed = conn.execute(
+        "SELECT count(*) FROM messages WHERE chat_id=?", (old,)
+    ).fetchone()[0]
+    if not existed:
+        return 0
+
+    dest_msgs = conn.execute(
+        "SELECT count(*) FROM messages WHERE chat_id=?", (new,)
+    ).fetchone()[0]
+    if dest_msgs == 0:
+        conn.execute("UPDATE messages SET chat_id=? WHERE chat_id=?", (new, old))
+    else:
+        conn.execute(
+            """INSERT INTO messages (chat_id, msg_id, reply_to, sender_id, sender, ts, text)
+               SELECT ?, msg_id, reply_to, sender_id, sender, ts, text
+               FROM messages WHERE chat_id=?
+               ON CONFLICT (chat_id, msg_id) DO NOTHING""",
+            (new, old),
+        )
+        conn.execute("DELETE FROM messages WHERE chat_id=?", (old,))
+
+    conn.execute("UPDATE windows SET chat_id=? WHERE chat_id=?", (new, old))
+    conn.execute("UPDATE dm_prefs SET chat_id=? WHERE chat_id=?", (new, old))
+
+    old_wm = conn.execute(
+        "SELECT last_indexed_msg_id FROM state WHERE chat_id=?", (old,)
+    ).fetchone()
+    new_wm = conn.execute(
+        "SELECT last_indexed_msg_id FROM state WHERE chat_id=?", (new,)
+    ).fetchone()
+    if old_wm and not new_wm:
+        conn.execute("UPDATE state SET chat_id=? WHERE chat_id=?", (new, old))
+    elif old_wm and new_wm:
+        conn.execute(
+            "UPDATE state SET last_indexed_msg_id=? WHERE chat_id=?",
+            (max(old_wm[0], new_wm[0]), new),
+        )
+        conn.execute("DELETE FROM state WHERE chat_id=?", (old,))
+    else:
+        conn.execute("DELETE FROM state WHERE chat_id=?", (old,))
+
+    conn.commit()
+    return existed
