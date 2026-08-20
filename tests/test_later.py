@@ -282,9 +282,13 @@ class TestOllamaErrors:
 
 
 class TestOpenAICompat:
-    def _complete(self, llm, body, monkeypatch):
+    def _complete(self, llm, body, monkeypatch, raw=None):
+        from answerbot import llm as llm_mod
+
         class FakeResp:
             def read(self):
+                if raw is not None:
+                    return raw
                 return json.dumps(body).encode()
 
             def __enter__(self):
@@ -295,16 +299,39 @@ class TestOpenAICompat:
 
         captured = {}
 
-        def fake_urlopen(req, timeout=None):
+        def fake_open(req, timeout=None):
             captured["url"] = req.full_url
             captured["headers"] = {k: v for k, v in req.header_items()}
             captured["payload"] = json.loads(req.data.decode())
             captured["timeout"] = timeout
             return FakeResp()
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(llm_mod, "_http_open", fake_open)
         text = llm.complete("sys", "usr")
         return text, captured
+
+    def test_default_answer_models(self):
+        assert config.DEFAULT_ANSWER_MODELS["groq"] == "openai/gpt-oss-20b"
+        assert config.DEFAULT_ANSWER_MODELS["openrouter"] == "openai/gpt-oss-20b:free"
+
+    def test_constructors_use_config(self, monkeypatch):
+        from answerbot.llm import GroqLLM, OpenRouterLLM
+
+        monkeypatch.setattr(config, "GROQ_API_KEY", "gsk-env")
+        monkeypatch.setattr(config, "OPENROUTER_API_KEY", "or-env")
+        monkeypatch.setattr(config, "ANSWER_MODEL", "openai/gpt-oss-20b")
+        monkeypatch.setattr(config, "OPENROUTER_HTTP_REFERER", "")
+        monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "answer-bot")
+
+        groq = GroqLLM()
+        assert groq.api_key == "gsk-env"
+        assert groq.model == "openai/gpt-oss-20b"
+        assert groq.base_url == "https://api.groq.com/openai/v1"
+
+        router = OpenRouterLLM()
+        assert router.api_key == "or-env"
+        assert router.base_url == "https://openrouter.ai/api/v1"
+        assert router.extra_headers == {"X-Title": "answer-bot"}
 
     def test_groq_complete(self, monkeypatch):
         from answerbot.llm import GroqLLM
@@ -319,7 +346,9 @@ class TestOpenAICompat:
         assert cap["url"] == "https://api.groq.com/openai/v1/chat/completions"
         assert cap["headers"]["Authorization"] == "Bearer gsk"
         assert cap["payload"]["messages"][0] == {"role": "system", "content": "sys"}
-        assert cap["payload"]["max_tokens"] == 1024
+        assert cap["payload"]["max_tokens"] == config.ANSWER_MAX_TOKENS
+        assert cap["payload"]["max_completion_tokens"] == config.ANSWER_MAX_TOKENS
+        assert cap["timeout"] == config.LLM_TIMEOUT
 
     def test_openrouter_headers_and_parts(self, monkeypatch):
         from answerbot.llm import OpenRouterLLM
@@ -333,9 +362,11 @@ class TestOpenAICompat:
             monkeypatch,
         )
         assert text == "ok"
+        assert cap["url"] == "https://openrouter.ai/api/v1/chat/completions"
         headers = {k.lower(): v for k, v in cap["headers"].items()}
         assert headers["http-referer"] == "https://example.test"
         assert headers["x-title"] == "answer-bot"
+        assert headers["authorization"] == "Bearer sk-or"
 
     def test_empty_response_raises(self, monkeypatch):
         from answerbot.llm import GroqLLM
@@ -347,7 +378,46 @@ class TestOpenAICompat:
                 monkeypatch,
             )
 
-    def test_http_error_is_wrapped(self, monkeypatch):
+    def test_length_finish_reason_raises(self, monkeypatch):
+        from answerbot.llm import GroqLLM
+
+        with pytest.raises(RuntimeError, match="token limit"):
+            self._complete(
+                GroqLLM(api_key="k", model="x"),
+                {
+                    "choices": [
+                        {
+                            "message": {"content": ""},
+                            "finish_reason": "length",
+                        }
+                    ]
+                },
+                monkeypatch,
+            )
+
+    def test_json_error_body_is_wrapped(self, monkeypatch):
+        from answerbot.llm import GroqLLM
+
+        with pytest.raises(RuntimeError, match="returned an error: nope"):
+            self._complete(
+                GroqLLM(api_key="k", model="x"),
+                {"error": {"message": "nope"}},
+                monkeypatch,
+            )
+
+    def test_invalid_json_is_wrapped(self, monkeypatch):
+        from answerbot.llm import GroqLLM
+
+        with pytest.raises(RuntimeError, match="invalid JSON"):
+            self._complete(
+                GroqLLM(api_key="k", model="x"),
+                {},
+                monkeypatch,
+                raw=b"not-json",
+            )
+
+    def test_http_error_uses_json_message(self, monkeypatch):
+        from answerbot import llm as llm_mod
         from answerbot.llm import GroqLLM
 
         def boom(*a, **k):
@@ -362,15 +432,73 @@ class TestOpenAICompat:
                 fp=BytesIO(b'{"error":{"message":"rate"}}'),
             )
 
-        monkeypatch.setattr(urllib.request, "urlopen", boom)
-        with pytest.raises(RuntimeError, match="Groq HTTP 429"):
+        monkeypatch.setattr(llm_mod, "_http_open", boom)
+        with pytest.raises(RuntimeError, match="Groq HTTP 429: rate"):
+            GroqLLM(api_key="k", model="x").complete("s", "u")
+
+    def test_http_error_does_not_dump_raw_body(self, monkeypatch):
+        from answerbot import llm as llm_mod
+        from answerbot.llm import GroqLLM
+
+        def boom(*a, **k):
+            from email.message import Message
+            from io import BytesIO
+
+            raise urllib.error.HTTPError(
+                "https://api.groq.com/openai/v1/chat/completions",
+                500,
+                "Internal Server Error",
+                hdrs=Message(),
+                fp=BytesIO(b"<html>trace</html>"),
+            )
+
+        monkeypatch.setattr(llm_mod, "_http_open", boom)
+        with pytest.raises(RuntimeError, match="Groq HTTP 500: Internal Server Error") as ei:
+            GroqLLM(api_key="k", model="x").complete("s", "u")
+        assert "trace" not in str(ei.value)
+        assert "<html>" not in str(ei.value)
+
+    def test_url_error_is_wrapped(self, monkeypatch):
+        from answerbot import llm as llm_mod
+        from answerbot.llm import GroqLLM
+
+        def boom(*a, **k):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr(llm_mod, "_http_open", boom)
+        with pytest.raises(RuntimeError, match="Groq at https://api.groq.com/openai/v1 failed"):
+            GroqLLM(api_key="k", model="x").complete("s", "u")
+
+    def test_timeout_is_wrapped(self, monkeypatch):
+        from answerbot import llm as llm_mod
+        from answerbot.llm import GroqLLM
+
+        def boom(*a, **k):
+            raise TimeoutError()
+
+        monkeypatch.setattr(llm_mod, "_http_open", boom)
+        with pytest.raises(RuntimeError, match="timed out after"):
             GroqLLM(api_key="k", model="x").complete("s", "u")
 
     def test_missing_key_raises(self):
-        from answerbot.llm import GroqLLM
+        from answerbot.llm import GroqLLM, OpenRouterLLM
 
         with pytest.raises(RuntimeError, match="API key is not set"):
             GroqLLM(api_key="", model="x").complete("s", "u")
+        with pytest.raises(RuntimeError, match="API key is not set"):
+            OpenRouterLLM(api_key="", model="x").complete("s", "u")
+
+    def test_redirects_are_not_followed(self):
+        from answerbot.llm import _NoRedirectHandler
+
+        handler = _NoRedirectHandler()
+        req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions")
+        assert (
+            handler.redirect_request(
+                req, None, 302, "Found", {}, "https://evil.example/steal"
+            )
+            is None
+        )
 
     def test_get_llm_dispatches(self, monkeypatch):
         from answerbot import llm as llm_mod

@@ -4,9 +4,40 @@ Only answer *generation* goes through here — embeddings are always local — s
 switching providers later touches this file and one config key, nothing else.
 """
 
+import json
+import urllib.error
+import urllib.request
 from typing import Protocol
 
 from . import config
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so Authorization is never forwarded to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _http_open(req, timeout):
+    return urllib.request.build_opener(_NoRedirectHandler).open(req, timeout=timeout)
+
+
+def _openai_api_error_text(raw: bytes, fallback: str) -> str:
+    """Best-effort message from an OpenAI-style error body; never the raw payload."""
+    try:
+        data = json.loads(raw.decode(errors="replace"))
+    except json.JSONDecodeError:
+        return fallback
+    if not isinstance(data, dict):
+        return fallback
+    err = data.get("error")
+    if isinstance(err, dict):
+        msg = err.get("message")
+        return str(msg) if msg else fallback
+    if isinstance(err, str) and err.strip():
+        return err
+    return fallback
 
 
 class LLM(Protocol):
@@ -91,12 +122,9 @@ class OpenAICompatLLM:
         self.label = label
 
     def complete(self, system: str, user: str) -> str:
-        import json
-        import urllib.error
-        import urllib.request
-
         if not self.api_key:
             raise RuntimeError(f"{self.label} API key is not set")
+        max_tokens = config.ANSWER_MAX_TOKENS
         payload = json.dumps(
             {
                 "model": self.model,
@@ -104,35 +132,47 @@ class OpenAICompatLLM:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                "max_tokens": 1024,
+                # Both names: reasoning models want max_completion_tokens;
+                # older OpenAI-compat endpoints only honour max_tokens.
+                "max_tokens": max_tokens,
+                "max_completion_tokens": max_tokens,
                 "stream": False,
             }
         ).encode()
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
             **self.extra_headers,
+            "Authorization": f"Bearer {self.api_key}",
         }
         url = f"{self.base_url}/chat/completions"
         req = urllib.request.Request(url, data=payload, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=config.LLM_TIMEOUT) as resp:
+            with _http_open(req, timeout=config.LLM_TIMEOUT) as resp:
                 body = json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")[:500]
-            raise RuntimeError(f"{self.label} HTTP {e.code}: {detail or e.reason}") from e
+            detail = _openai_api_error_text(e.read(), e.reason)
+            raise RuntimeError(f"{self.label} HTTP {e.code}: {detail}") from e
         except urllib.error.URLError as e:
             raise RuntimeError(f"{self.label} at {self.base_url} failed: {e}") from e
         except TimeoutError as e:
             raise RuntimeError(f"{self.label} timed out after {config.LLM_TIMEOUT}s") from e
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"{self.label} returned invalid JSON") from e
+        if not isinstance(body, dict):
+            raise RuntimeError(f"{self.label} returned invalid JSON")
         err = body.get("error")
         if err:
             msg = err.get("message") if isinstance(err, dict) else err
             raise RuntimeError(f"{self.label} returned an error: {msg}")
         choices = body.get("choices") or []
-        content = choices[0].get("message", {}).get("content") if choices else None
-        text = _openai_message_text(content)
+        choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        text = _openai_message_text(message.get("content"))
         if not text:
+            if choice.get("finish_reason") == "length":
+                raise RuntimeError(
+                    f"{self.label} hit the token limit before producing an answer"
+                )
             raise RuntimeError(f"{self.label} returned no text")
         return text
 
@@ -177,10 +217,6 @@ class OllamaLLM:
         self.host = (host or config.OLLAMA_HOST).rstrip("/")
 
     def complete(self, system: str, user: str) -> str:
-        import json
-        import urllib.error
-        import urllib.request
-
         payload = json.dumps(
             {
                 "model": self.model,

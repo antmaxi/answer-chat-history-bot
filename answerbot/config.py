@@ -58,13 +58,18 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # OpenRouter uses these to attribute traffic; optional.
 OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "")
 OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "answer-bot")
-_DEFAULT_ANSWER_MODEL = {
+DEFAULT_ANSWER_MODELS = {
     "claude": "claude-sonnet-5",
     "gemini": "gemini-2.5-flash",
     "groq": "openai/gpt-oss-20b",
     "openrouter": "openai/gpt-oss-20b:free",
-}.get(LLM_PROVIDER.lower(), "claude-sonnet-5")
-ANSWER_MODEL = os.getenv("ANSWER_MODEL", _DEFAULT_ANSWER_MODEL)
+}
+ANSWER_MODEL = os.getenv(
+    "ANSWER_MODEL", DEFAULT_ANSWER_MODELS.get(LLM_PROVIDER.lower(), "claude-sonnet-5")
+)
+# Groq/OpenRouter completion budget. Reasoning models spend this on thinking
+# plus the visible answer, so it needs to be larger than Claude's 1024.
+ANSWER_MAX_TOKENS = int(os.getenv("ANSWER_MAX_TOKENS", "8192"))
 # Seconds a user must wait between answers in the same chat. 0 disables.
 ANSWER_COOLDOWN_SECONDS = int(os.getenv("ANSWER_COOLDOWN_SECONDS", "8"))
 # Persist each question + retrieved window ids locally. "0" / "false" turns it off.
