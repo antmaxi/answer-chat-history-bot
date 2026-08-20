@@ -281,6 +281,108 @@ class TestOllamaErrors:
             OllamaLLM(model="x", host="http://localhost:9").complete("s", "u")
 
 
+class TestOpenAICompat:
+    def _complete(self, llm, body, monkeypatch):
+        class FakeResp:
+            def read(self):
+                return json.dumps(body).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["headers"] = {k: v for k, v in req.header_items()}
+            captured["payload"] = json.loads(req.data.decode())
+            captured["timeout"] = timeout
+            return FakeResp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        text = llm.complete("sys", "usr")
+        return text, captured
+
+    def test_groq_complete(self, monkeypatch):
+        from answerbot.llm import GroqLLM
+
+        llm = GroqLLM(api_key="gsk", model="openai/gpt-oss-20b")
+        text, cap = self._complete(
+            llm,
+            {"choices": [{"message": {"content": "  hi  "}}]},
+            monkeypatch,
+        )
+        assert text == "hi"
+        assert cap["url"] == "https://api.groq.com/openai/v1/chat/completions"
+        assert cap["headers"]["Authorization"] == "Bearer gsk"
+        assert cap["payload"]["messages"][0] == {"role": "system", "content": "sys"}
+        assert cap["payload"]["max_tokens"] == 1024
+
+    def test_openrouter_headers_and_parts(self, monkeypatch):
+        from answerbot.llm import OpenRouterLLM
+
+        monkeypatch.setattr(config, "OPENROUTER_HTTP_REFERER", "https://example.test")
+        monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "answer-bot")
+        llm = OpenRouterLLM(api_key="sk-or", model="openai/gpt-oss-20b:free")
+        text, cap = self._complete(
+            llm,
+            {"choices": [{"message": {"content": [{"type": "text", "text": "ok"}]}}]},
+            monkeypatch,
+        )
+        assert text == "ok"
+        headers = {k.lower(): v for k, v in cap["headers"].items()}
+        assert headers["http-referer"] == "https://example.test"
+        assert headers["x-title"] == "answer-bot"
+
+    def test_empty_response_raises(self, monkeypatch):
+        from answerbot.llm import GroqLLM
+
+        with pytest.raises(RuntimeError, match="no text"):
+            self._complete(
+                GroqLLM(api_key="k", model="x"),
+                {"choices": [{"message": {"content": "  "}}]},
+                monkeypatch,
+            )
+
+    def test_http_error_is_wrapped(self, monkeypatch):
+        from answerbot.llm import GroqLLM
+
+        def boom(*a, **k):
+            from email.message import Message
+            from io import BytesIO
+
+            raise urllib.error.HTTPError(
+                "https://api.groq.com/openai/v1/chat/completions",
+                429,
+                "Too Many Requests",
+                hdrs=Message(),
+                fp=BytesIO(b'{"error":{"message":"rate"}}'),
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        with pytest.raises(RuntimeError, match="Groq HTTP 429"):
+            GroqLLM(api_key="k", model="x").complete("s", "u")
+
+    def test_missing_key_raises(self):
+        from answerbot.llm import GroqLLM
+
+        with pytest.raises(RuntimeError, match="API key is not set"):
+            GroqLLM(api_key="", model="x").complete("s", "u")
+
+    def test_get_llm_dispatches(self, monkeypatch):
+        from answerbot import llm as llm_mod
+
+        monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
+        monkeypatch.setattr(llm_mod, "GroqLLM", lambda: "groq-llm")
+        assert llm_mod.get_llm() == "groq-llm"
+        monkeypatch.setattr(config, "LLM_PROVIDER", "openrouter")
+        monkeypatch.setattr(llm_mod, "OpenRouterLLM", lambda: "or-llm")
+        assert llm_mod.get_llm() == "or-llm"
+
+
 def _error_record(msg="failed to answer", exc=True):
     exc_info = None
     if exc:

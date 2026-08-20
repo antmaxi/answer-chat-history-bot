@@ -50,8 +50,8 @@ python -m answerbot.answer "how much was the ski trip"  # grounded answer + sour
 ```
 
 `search` takes `-k N` for the number of results and `--full` to print whole
-windows instead of excerpts. `answer` needs `ANTHROPIC_API_KEY` (Claude) or
-`GEMINI_API_KEY` (Gemini) set, depending on `LLM_PROVIDER`.
+windows instead of excerpts. `answer` needs an LLM key set for the chosen
+`LLM_PROVIDER` (Claude, Gemini, Groq, or OpenRouter).
 
 ### Topping up with new history
 
@@ -132,9 +132,10 @@ bot uses it too. Caveat: this anonymizes the *speaker label* only — message
 2. **Turn privacy mode OFF** (BotFather → Bot Settings → Group Privacy), or the
    bot receives no group messages to read or index.
 3. Set `TELEGRAM_BOT_TOKEN`, `ADMIN_USER_IDS` (your numeric Telegram user id),
-   and an LLM key (`ANTHROPIC_API_KEY` or `GEMINI_API_KEY`) in `.env`. Open a
-   DM with the bot so it can send you `Bot is up` / `Bot is down` when polling
-   starts or stops, and any logged error with its traceback.
+   and an LLM key (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, or
+   `OPENROUTER_API_KEY`) in `.env`. Open a DM with the bot so it can send you
+   `Bot is up` / `Bot is down` when polling starts or stops, and any logged
+   error with its traceback.
 4. Add the bot to your group, then run:
 
 ```bash
@@ -158,6 +159,11 @@ Set `LLM_PROVIDER` and, if needed, `ANSWER_MODEL`:
 - **Claude** (default): `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY`
 - **Gemini**: `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` (defaults to
   `gemini-2.5-flash`; override with `ANSWER_MODEL`)
+- **Groq**: `LLM_PROVIDER=groq` and `GROQ_API_KEY` (defaults to
+  `openai/gpt-oss-20b`)
+- **OpenRouter**: `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY`
+  (defaults to `openai/gpt-oss-20b:free`; any OpenRouter model id works,
+  including paid ones without the `:free` suffix)
 - **Ollama**: `LLM_PROVIDER=ollama`, `ANSWER_MODEL` to a pulled model, and
   optionally `OLLAMA_HOST` / `LLM_TIMEOUT`
 

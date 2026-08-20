@@ -9,7 +9,7 @@ shipped. This document is the current design, not a build queue.
 | Area | Choice |
 |---|---|
 | History | One-time Telegram Desktop JSON export to seed, Bot API to stay live |
-| Answering | Claude, Gemini, or local Ollama (`LLM_PROVIDER`) behind the same protocol |
+| Answering | Claude, Gemini, Groq, OpenRouter, or local Ollama (`LLM_PROVIDER`) behind the same protocol |
 | Embeddings | Local `sentence-transformers` (`intfloat/multilingual-e5-small`) |
 | Interface | Group (@mention or reply) **and** private DM |
 | Storage | Single SQLite file — FTS5 for keyword, float32 blobs + numpy for vectors |
@@ -25,9 +25,9 @@ is the same: only if `python -m answerbot.eval` says hybrid RRF is not enough.
 ```
 Telegram export (.json) ──┐
                           ├──> ingest ──> SQLite ──> index ──> retrieve ──> answer ──> Telegram
-Bot API live updates ─────┘             (messages)  (windows,  (hybrid +    (Claude /
-                                                     vectors,   time/speaker) Gemini / Ollama)
-                                                     FTS5)
+Bot API live updates ─────┘             (messages)  (windows,  (hybrid +    (Claude / Gemini /
+                                                     vectors,   time/speaker) Groq / OpenRouter /
+                                                     FTS5)                    Ollama)
 ```
 
 Modules:
@@ -142,9 +142,11 @@ wording.
 ## Answering
 
 `answer.py` exposes `complete_answer` / `answer` and an `LLM` protocol.
-`ClaudeLLM`, `GeminiLLM`, and `OllamaLLM` all honour `LLM_TIMEOUT`; Ollama uses
-`OLLAMA_HOST` and fails with a clear error on timeout or empty response. Gemini
-reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
+`ClaudeLLM`, `GeminiLLM`, `GroqLLM`, `OpenRouterLLM`, and `OllamaLLM` all honour
+`LLM_TIMEOUT`. Groq and OpenRouter speak the OpenAI Chat Completions API over
+HTTPS (no extra SDK). Ollama uses `OLLAMA_HOST` and fails with a clear error on
+timeout or empty response. Gemini reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`);
+Groq `GROQ_API_KEY`; OpenRouter `OPENROUTER_API_KEY`.
 
 Prompt rule: answers come **only** from the supplied excerpts. “I couldn't find
 this in the history” is a valid answer. Context blocks carry `[W3] 2026-03-14,
