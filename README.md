@@ -53,7 +53,7 @@ python -m answerbot.answer "how much was the ski trip"  # grounded answer + sour
 
 `search` takes `-k N` for the number of results and `--full` to print whole
 windows instead of excerpts. `answer` needs an LLM key set for the chosen
-`LLM_PROVIDER` (Claude, Gemini, Groq, or OpenRouter).
+`LLM_PROVIDER` (Claude, Gemini, Groq, OpenRouter, or Cursor).
 
 ### Topping up with new history
 
@@ -141,8 +141,9 @@ To use the exporter's contact labels after all (the old fallback), set
 3. Set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (the supergroup's Bot API id,
    e.g. `-1001234567890`; a positive id is treated as `-100<id>`),
    `ADMIN_USER_IDS` (your numeric Telegram user id),
-   and an LLM key (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, or
-   `OPENROUTER_API_KEY`) in `.env`. Open a DM with the bot so it can send you
+   and an LLM key (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`,
+   `OPENROUTER_API_KEY`, or `CURSOR_API_KEY`) in `.env`. Open a DM with the bot
+   so it can send you
    `Bot is up` / `Bot is down` when polling starts or stops, and any logged
    error with its traceback.
 4. Add the bot to that group, then run:
@@ -173,6 +174,13 @@ Set `LLM_PROVIDER` and, if needed, `ANSWER_MODEL`:
 - **OpenRouter**: `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY`
   (defaults to `openai/gpt-oss-20b:free`; any OpenRouter model id works,
   including paid ones without the `:free` suffix)
+- **Cursor**: `LLM_PROVIDER=cursor` and `CURSOR_API_KEY` from
+  [cursor.com/dashboard/api](https://cursor.com/dashboard/api) (Pro or
+  higher). Install the extra with `pip install 'answerbot[cursor]'`.
+  Defaults to `composer-2.5`, which bills the included Cursor Models
+  pool rather than a third-party API. This is a local Cursor agent
+  (`tools=[]`, text only) — not an OpenAI-compatible `/chat/completions`
+  endpoint — so the default Docker image does not include it.
 - **Ollama**: `LLM_PROVIDER=ollama`, `ANSWER_MODEL` to a pulled model, and
   optionally `OLLAMA_HOST` / `LLM_TIMEOUT`
 
@@ -260,15 +268,17 @@ Answer generation is the only cloud LLM call. See
 setup.
 
 - **`LLM_PROVIDER`** (`claude`) — `claude`, `gemini`, `groq`, `openrouter`,
-  or `ollama`.
+  `ollama`, or `cursor`.
 - **`ANTHROPIC_API_KEY`**, **`GEMINI_API_KEY`** (or **`GOOGLE_API_KEY`**),
-  **`GROQ_API_KEY`**, **`OPENROUTER_API_KEY`** — key for the chosen
-  provider. Unused keys can be left empty.
+  **`GROQ_API_KEY`**, **`OPENROUTER_API_KEY`**, **`CURSOR_API_KEY`** — key
+  for the chosen provider. Unused keys can be left empty.
 - **`OPENROUTER_HTTP_REFERER`** / **`OPENROUTER_APP_TITLE`** (`answer-chat-history-bot`)
   — optional OpenRouter attribution headers. Referer is omitted unless set.
 - **`ANSWER_MODEL`** — model id. Defaults: Claude `claude-sonnet-5`, Gemini
   `gemini-2.5-flash`, Groq `openai/gpt-oss-20b`, OpenRouter
-  `openai/gpt-oss-20b:free`. Required for Ollama (whatever you have pulled).
+  `openai/gpt-oss-20b:free`, Cursor `composer-2.5`. Required for Ollama
+  (whatever you have pulled). Cursor ids other than Composer/Grok draw
+  from the Other Models pool at that model's API price.
 - **`ANSWER_MAX_TOKENS`** (`8192`) — Groq/OpenRouter completion budget. On
   reasoning models this covers *thinking plus* the visible answer; 1024 is
   often not enough and comes back as an empty reply.

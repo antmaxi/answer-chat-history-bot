@@ -325,6 +325,154 @@ class TestOllamaErrors:
             OllamaLLM(model="x", host="http://localhost:9").complete("s", "u")
 
 
+class TestCursor:
+    def _install_sdk(self, monkeypatch, prompt):
+        from answerbot import llm as llm_mod
+
+        class AgentOptions:
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+
+        class LocalAgentOptions:
+            def __init__(self, *, cwd):
+                self.cwd = cwd
+
+        class CursorAgentError(Exception):
+            def __init__(self, message, is_retryable=False):
+                super().__init__(message)
+                self.message = message
+                self.is_retryable = is_retryable
+
+        class Agent:
+            @staticmethod
+            def prompt(message, options):
+                return prompt(message, options)
+
+        monkeypatch.setattr(
+            llm_mod,
+            "_cursor_sdk",
+            lambda: (Agent, AgentOptions, CursorAgentError, LocalAgentOptions),
+        )
+        return CursorAgentError
+
+    def test_default_answer_model(self):
+        assert config.DEFAULT_ANSWER_MODELS["cursor"] == "composer-2.5"
+
+    def test_constructor_uses_config(self, monkeypatch):
+        from answerbot.llm import CursorLLM
+
+        monkeypatch.setattr(config, "CURSOR_API_KEY", "crsr_env")
+        monkeypatch.setattr(config, "ANSWER_MODEL", "composer-2.5")
+        llm = CursorLLM()
+        assert llm.api_key == "crsr_env"
+        assert llm.model == "composer-2.5"
+
+    def test_complete_concatenates_and_disables_tools(self, monkeypatch):
+        from pathlib import Path
+
+        from answerbot.llm import CursorLLM
+
+        captured = {}
+
+        class FakeResult:
+            status = "finished"
+            result = "  hi  "
+            id = "run-1"
+
+        def prompt(message, options):
+            captured["message"] = message
+            captured["options"] = options
+            assert Path(options.local.cwd).is_dir()
+            return FakeResult()
+
+        self._install_sdk(monkeypatch, prompt)
+        llm = CursorLLM(api_key="crsr_x", model="composer-2.5")
+        assert llm.complete("  sys  ", "  usr  ") == "hi"
+        assert captured["message"] == "sys\n\nusr"
+        assert captured["options"].api_key == "crsr_x"
+        assert captured["options"].model == "composer-2.5"
+        assert captured["options"].tools == []
+
+    def test_explicit_cwd(self, monkeypatch, tmp_path):
+        from answerbot.llm import CursorLLM
+
+        captured = {}
+
+        class FakeResult:
+            status = "finished"
+            result = "ok"
+            id = "run-1"
+
+        def prompt(message, options):
+            captured["cwd"] = options.local.cwd
+            return FakeResult()
+
+        self._install_sdk(monkeypatch, prompt)
+        llm = CursorLLM(api_key="k", model="composer-2.5", cwd=str(tmp_path))
+        assert llm.complete("s", "u") == "ok"
+        assert captured["cwd"] == str(tmp_path)
+
+    def test_missing_key_raises(self):
+        from answerbot.llm import CursorLLM
+
+        with pytest.raises(RuntimeError, match="API key is not set"):
+            CursorLLM(api_key="", model="composer-2.5").complete("s", "u")
+
+    def test_missing_sdk_raises(self, monkeypatch):
+        import sys
+
+        from answerbot.llm import CursorLLM, _cursor_sdk
+
+        monkeypatch.setitem(sys.modules, "cursor_sdk", None)
+        with pytest.raises(RuntimeError, match="cursor-sdk"):
+            _cursor_sdk()
+        with pytest.raises(RuntimeError, match="cursor-sdk"):
+            CursorLLM(api_key="k", model="composer-2.5").complete("s", "u")
+
+    def test_run_error_raises(self, monkeypatch):
+        from answerbot.llm import CursorLLM
+
+        class FakeResult:
+            status = "error"
+            result = ""
+            id = "run-9"
+
+        self._install_sdk(monkeypatch, lambda message, options: FakeResult())
+        with pytest.raises(RuntimeError, match="Cursor run error \\(run-9\\)"):
+            CursorLLM(api_key="k", model="composer-2.5", cwd=".").complete("s", "u")
+
+    def test_empty_response_raises(self, monkeypatch):
+        from answerbot.llm import CursorLLM
+
+        class FakeResult:
+            status = "finished"
+            result = "  "
+            id = "run-1"
+
+        self._install_sdk(monkeypatch, lambda message, options: FakeResult())
+        with pytest.raises(RuntimeError, match="no text"):
+            CursorLLM(api_key="k", model="composer-2.5", cwd=".").complete("s", "u")
+
+    def test_startup_error_is_wrapped(self, monkeypatch):
+        from answerbot.llm import CursorLLM
+
+        box = {}
+
+        def boom(message, options):
+            raise box["err"]("invalid key")
+
+        box["err"] = self._install_sdk(monkeypatch, boom)
+        with pytest.raises(RuntimeError, match="Cursor: invalid key"):
+            CursorLLM(api_key="k", model="composer-2.5", cwd=".").complete("s", "u")
+
+    def test_get_llm_dispatches(self, monkeypatch):
+        from answerbot import llm as llm_mod
+
+        monkeypatch.setattr(config, "LLM_PROVIDER", "cursor")
+        monkeypatch.setattr(llm_mod, "CursorLLM", lambda: "cursor-llm")
+        assert llm_mod.get_llm() == "cursor-llm"
+
+
 class TestOpenAICompat:
     def _complete(self, llm, body, monkeypatch, raw=None):
         from answerbot import llm as llm_mod

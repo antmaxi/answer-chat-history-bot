@@ -57,6 +57,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+CURSOR_API_KEY = os.getenv("CURSOR_API_KEY")
 # OpenRouter uses these to attribute traffic; optional.
 OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "")
 OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "answer-chat-history-bot")
@@ -65,6 +66,7 @@ DEFAULT_ANSWER_MODELS = {
     "gemini": "gemini-2.5-flash",
     "groq": "openai/gpt-oss-20b",
     "openrouter": "openai/gpt-oss-20b:free",
+    "cursor": "composer-2.5",
 }
 ANSWER_MODEL = os.getenv(
     "ANSWER_MODEL", DEFAULT_ANSWER_MODELS.get(LLM_PROVIDER.lower(), "claude-sonnet-5")

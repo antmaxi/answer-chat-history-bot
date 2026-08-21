@@ -6,6 +6,7 @@ switching providers later touches this file and one config key, nothing else.
 
 import json
 import re
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -319,6 +320,71 @@ class OllamaLLM:
         return text.strip()
 
 
+def _cursor_sdk():
+    """Lazy import so other providers do not need cursor-sdk installed."""
+    try:
+        from cursor_sdk import Agent, AgentOptions, CursorAgentError, LocalAgentOptions
+    except ImportError as e:
+        raise RuntimeError(
+            "Cursor provider requires the cursor-sdk package. "
+            "Install with: pip install 'answerbot[cursor]'"
+        ) from e
+    return Agent, AgentOptions, CursorAgentError, LocalAgentOptions
+
+
+class CursorLLM:
+    """Cursor SDK agent billed to the Cursor subscription, not a chat-completions API.
+
+    Concatenates system + user into one prompt (the SDK has no system role) and
+    offers no tools so the local agent can only return text.
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        cwd: str | None = None,
+    ):
+        self.api_key = api_key if api_key is not None else config.CURSOR_API_KEY
+        self.model = model or config.ANSWER_MODEL
+        self.cwd = cwd
+
+    def complete(self, system: str, user: str) -> str:
+        if not self.api_key:
+            raise RuntimeError("Cursor API key is not set")
+        Agent, AgentOptions, CursorAgentError, LocalAgentOptions = _cursor_sdk()
+        prompt = f"{system.strip()}\n\n{user.strip()}"
+
+        def run(cwd: str):
+            try:
+                return Agent.prompt(
+                    prompt,
+                    AgentOptions(
+                        api_key=self.api_key,
+                        model=self.model,
+                        tools=[],
+                        local=LocalAgentOptions(cwd=cwd),
+                    ),
+                )
+            except CursorAgentError as e:
+                raise RuntimeError(f"Cursor: {e.message}") from e
+
+        if self.cwd:
+            result = run(self.cwd)
+        else:
+            with tempfile.TemporaryDirectory(prefix="answerbot-cursor-") as cwd:
+                result = run(cwd)
+
+        if result.status != "finished":
+            run_id = getattr(result, "id", "") or ""
+            suffix = f" ({run_id})" if run_id else ""
+            raise RuntimeError(f"Cursor run {result.status}{suffix}")
+        text = (result.result or "").strip()
+        if not text:
+            raise RuntimeError("Cursor returned no text")
+        return text
+
+
 def get_llm() -> LLM:
     provider = config.LLM_PROVIDER.lower()
     if provider == "claude":
@@ -331,4 +397,6 @@ def get_llm() -> LLM:
         return GroqLLM()
     if provider == "openrouter":
         return OpenRouterLLM()
+    if provider == "cursor":
+        return CursorLLM()
     raise ValueError(f"unknown LLM_PROVIDER: {config.LLM_PROVIDER!r}")
