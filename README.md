@@ -263,6 +263,10 @@ setup.
 - **`ANSWER_MAX_TOKENS`** (`8192`) — Groq/OpenRouter completion budget. On
   reasoning models this covers *thinking plus* the visible answer; 1024 is
   often not enough and comes back as an empty reply.
+- **`ANSWER_MAX_REQUEST_TOKENS`** (`0`) — cap on *prompt plus* completion
+  for one request. `0` means no extra cap, except Groq which then uses
+  `8000` to match on_demand TPM (a request that reserves 8192 completion
+  tokens 413s even with a short prompt). Raise this if you are on Dev Tier.
 - **`ANSWER_COOLDOWN_SECONDS`** (`8`) — per-user wait between answers in
   the same chat. `0` disables. Admins skip the cooldown.
 - **`QUERY_LOG`** (`1`) — persist each question and the retrieved window ids

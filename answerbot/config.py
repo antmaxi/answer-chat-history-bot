@@ -70,6 +70,10 @@ ANSWER_MODEL = os.getenv(
 # Groq/OpenRouter completion budget. Reasoning models spend this on thinking
 # plus the visible answer, so it needs to be larger than Claude's 1024.
 ANSWER_MAX_TOKENS = int(os.getenv("ANSWER_MAX_TOKENS", "8192"))
+# Cap on prompt + completion tokens for one request. 0 = no extra cap
+# (OpenRouter). Groq still applies its on_demand TPM default of 8000 when
+# this is unset, because it reserves both against that limit.
+ANSWER_MAX_REQUEST_TOKENS = int(os.getenv("ANSWER_MAX_REQUEST_TOKENS", "0"))
 # Seconds a user must wait between answers in the same chat. 0 disables.
 ANSWER_COOLDOWN_SECONDS = int(os.getenv("ANSWER_COOLDOWN_SECONDS", "8"))
 # Persist each question + retrieved window ids locally. "0" / "false" turns it off.

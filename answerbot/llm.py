@@ -16,6 +16,32 @@ from . import config
 # with a bare 403. Any non-empty, non-urllib value is enough.
 _HTTP_USER_AGENT = "answer-chat-history-bot/0.1.0"
 
+# Groq on_demand TPM for gpt-oss-20b is 8000; each request reserves
+# prompt + max_completion_tokens against it. 8192 completion alone already
+# overshoots, which is a 413 even before excerpts are added.
+_GROQ_DEFAULT_MAX_REQUEST_TOKENS = 8000
+_MIN_COMPLETION_TOKENS = 256
+_CHAT_OVERHEAD_TOKENS = 24
+
+
+def _estimate_tokens(text: str) -> int:
+    """Conservative count so Groq's TPM check is not undershot."""
+    return max(1, (len(text.encode("utf-8")) + 1) // 2)
+
+
+def _completion_tokens(system: str, user: str, wanted: int, cap: int) -> int:
+    """Shrink completion so prompt + completion stay under cap. cap 0 = no shrink."""
+    if cap <= 0:
+        return wanted
+    prompt = _estimate_tokens(system) + _estimate_tokens(user) + _CHAT_OVERHEAD_TOKENS
+    room = cap - prompt
+    if room < _MIN_COMPLETION_TOKENS:
+        raise RuntimeError(
+            f"prompt is too large for the request budget "
+            f"(~{prompt} tokens, limit {cap})"
+        )
+    return min(wanted, room)
+
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Refuse redirects so Authorization is never forwarded to another host."""
@@ -119,17 +145,28 @@ class OpenAICompatLLM:
         base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
         label: str = "LLM",
+        max_request_tokens: int | None = None,
     ):
         self.model = model or config.ANSWER_MODEL
         self.api_key = api_key
         self.base_url = (base_url or "").rstrip("/")
         self.extra_headers = extra_headers or {}
         self.label = label
+        self.max_request_tokens = (
+            max_request_tokens
+            if max_request_tokens is not None
+            else config.ANSWER_MAX_REQUEST_TOKENS
+        )
 
     def complete(self, system: str, user: str) -> str:
         if not self.api_key:
             raise RuntimeError(f"{self.label} API key is not set")
-        max_tokens = config.ANSWER_MAX_TOKENS
+        try:
+            max_tokens = _completion_tokens(
+                system, user, config.ANSWER_MAX_TOKENS, self.max_request_tokens
+            )
+        except RuntimeError as e:
+            raise RuntimeError(f"{self.label} {e}") from None
         payload = json.dumps(
             {
                 "model": self.model,
@@ -189,12 +226,18 @@ class GroqLLM(OpenAICompatLLM):
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
+        max_request_tokens: int | None = None,
     ):
+        if max_request_tokens is None:
+            max_request_tokens = (
+                config.ANSWER_MAX_REQUEST_TOKENS or _GROQ_DEFAULT_MAX_REQUEST_TOKENS
+            )
         super().__init__(
             model=model or config.ANSWER_MODEL,
             api_key=api_key if api_key is not None else config.GROQ_API_KEY,
             base_url=base_url or "https://api.groq.com/openai/v1",
             label="Groq",
+            max_request_tokens=max_request_tokens,
         )
 
 

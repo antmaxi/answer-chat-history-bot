@@ -320,6 +320,7 @@ class TestOpenAICompat:
         monkeypatch.setattr(config, "GROQ_API_KEY", "gsk-env")
         monkeypatch.setattr(config, "OPENROUTER_API_KEY", "or-env")
         monkeypatch.setattr(config, "ANSWER_MODEL", "openai/gpt-oss-20b")
+        monkeypatch.setattr(config, "ANSWER_MAX_REQUEST_TOKENS", 0)
         monkeypatch.setattr(config, "OPENROUTER_HTTP_REFERER", "")
         monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "answer-chat-history-bot")
 
@@ -327,11 +328,13 @@ class TestOpenAICompat:
         assert groq.api_key == "gsk-env"
         assert groq.model == "openai/gpt-oss-20b"
         assert groq.base_url == "https://api.groq.com/openai/v1"
+        assert groq.max_request_tokens == 8000
 
         router = OpenRouterLLM()
         assert router.api_key == "or-env"
         assert router.base_url == "https://openrouter.ai/api/v1"
         assert router.extra_headers == {"X-Title": "answer-chat-history-bot"}
+        assert router.max_request_tokens == 0
 
     def test_groq_complete(self, monkeypatch):
         from answerbot.llm import GroqLLM
@@ -348,9 +351,37 @@ class TestOpenAICompat:
         assert headers["authorization"] == "Bearer gsk"
         assert headers["user-agent"] == "answer-chat-history-bot/0.1.0"
         assert cap["payload"]["messages"][0] == {"role": "system", "content": "sys"}
-        assert cap["payload"]["max_tokens"] == config.ANSWER_MAX_TOKENS
-        assert cap["payload"]["max_completion_tokens"] == config.ANSWER_MAX_TOKENS
+        from answerbot.llm import _completion_tokens
+
+        expected = _completion_tokens(
+            "sys", "usr", config.ANSWER_MAX_TOKENS, llm.max_request_tokens
+        )
+        assert cap["payload"]["max_tokens"] == expected
+        assert cap["payload"]["max_completion_tokens"] == expected
         assert cap["timeout"] == config.LLM_TIMEOUT
+
+    def test_groq_caps_completion_to_tpm_budget(self, monkeypatch):
+        from answerbot.llm import GroqLLM, _CHAT_OVERHEAD_TOKENS, _estimate_tokens
+
+        monkeypatch.setattr(config, "ANSWER_MAX_TOKENS", 8192)
+        monkeypatch.setattr(config, "ANSWER_MAX_REQUEST_TOKENS", 0)
+        llm = GroqLLM(api_key="gsk", model="openai/gpt-oss-20b")
+        _, cap = self._complete(
+            llm,
+            {"choices": [{"message": {"content": "ok"}}]},
+            monkeypatch,
+        )
+        prompt = _estimate_tokens("sys") + _estimate_tokens("usr") + _CHAT_OVERHEAD_TOKENS
+        assert cap["payload"]["max_tokens"] + prompt == 8000
+        assert cap["payload"]["max_tokens"] < 8192
+
+    def test_groq_prompt_over_budget_raises(self, monkeypatch):
+        from answerbot.llm import GroqLLM
+
+        monkeypatch.setattr(config, "ANSWER_MAX_REQUEST_TOKENS", 0)
+        llm = GroqLLM(api_key="k", model="x")
+        with pytest.raises(RuntimeError, match="too large for the request budget"):
+            llm.complete("s", "x" * 100_000)
 
     def test_openrouter_headers_and_parts(self, monkeypatch):
         from answerbot.llm import OpenRouterLLM
@@ -370,6 +401,7 @@ class TestOpenAICompat:
         assert headers["x-title"] == "answer-chat-history-bot"
         assert headers["authorization"] == "Bearer sk-or"
         assert headers["user-agent"] == "answer-chat-history-bot/0.1.0"
+        assert cap["payload"]["max_tokens"] == config.ANSWER_MAX_TOKENS
 
     def test_empty_response_raises(self, monkeypatch):
         from answerbot.llm import GroqLLM
