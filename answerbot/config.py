@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_PATH = Path(os.getenv("DB_PATH", "answerbot.db"))
+DB_PATH = Path(os.getenv("DB_PATH", "data/answerbot.db"))
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 _raw_log_path = os.getenv("LOG_PATH")

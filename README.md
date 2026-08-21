@@ -29,9 +29,9 @@ docker compose run --rm bot python -m answerbot.index
 docker compose up -d
 ```
 
-SQLite lives at `data/answerbot.db`. If you already indexed locally, copy
-`answerbot.db` into `data/` before the first `up`. The entrypoint chowns
-`data/` to the container user so a root-created bind mount still works.
+SQLite lives at `data/answerbot.db` (the same default as a local run). The
+entrypoint chowns `data/` to the container user so a root-created bind mount
+still works.
 
 Stop the bot (`docker compose stop`) before a bulk export or `index --update`
 so two writers don't share the file. Other commands (`search`, `answer`,
@@ -195,8 +195,8 @@ and fill in the keys you need. Values are read once at startup from
 
 ### Paths and logs
 
-- **`DB_PATH`** (`answerbot.db`) — SQLite file for messages, windows, and
-  embeddings. In Docker this is `/data/answerbot.db`.
+- **`DB_PATH`** (`data/answerbot.db`) — SQLite file for messages, windows, and
+  embeddings. In Docker this is `/data/answerbot.db` (the `./data` bind mount).
 - **`LOG_LEVEL`** (`INFO`) — logging threshold (`DEBUG`, `INFO`, `WARNING`,
   `ERROR`).
 - **`LOG_PATH`** — rotating file next to the database (`answerbot.log` by
