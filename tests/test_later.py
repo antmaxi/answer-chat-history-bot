@@ -344,7 +344,9 @@ class TestOpenAICompat:
         )
         assert text == "hi"
         assert cap["url"] == "https://api.groq.com/openai/v1/chat/completions"
-        assert cap["headers"]["Authorization"] == "Bearer gsk"
+        headers = {k.lower(): v for k, v in cap["headers"].items()}
+        assert headers["authorization"] == "Bearer gsk"
+        assert headers["user-agent"] == "answer-chat-history-bot/0.1.0"
         assert cap["payload"]["messages"][0] == {"role": "system", "content": "sys"}
         assert cap["payload"]["max_tokens"] == config.ANSWER_MAX_TOKENS
         assert cap["payload"]["max_completion_tokens"] == config.ANSWER_MAX_TOKENS
@@ -367,6 +369,7 @@ class TestOpenAICompat:
         assert headers["http-referer"] == "https://example.test"
         assert headers["x-title"] == "answer-chat-history-bot"
         assert headers["authorization"] == "Bearer sk-or"
+        assert headers["user-agent"] == "answer-chat-history-bot/0.1.0"
 
     def test_empty_response_raises(self, monkeypatch):
         from answerbot.llm import GroqLLM

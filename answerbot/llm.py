@@ -12,6 +12,11 @@ from typing import Protocol
 from . import config
 
 
+# Cloudflare (in front of Groq) rejects Python's default urllib User-Agent
+# with a bare 403. Any non-empty, non-urllib value is enough.
+_HTTP_USER_AGENT = "answer-chat-history-bot/0.1.0"
+
+
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Refuse redirects so Authorization is never forwarded to another host."""
 
@@ -141,6 +146,7 @@ class OpenAICompatLLM:
         ).encode()
         headers = {
             "Content-Type": "application/json",
+            "User-Agent": _HTTP_USER_AGENT,
             **self.extra_headers,
             "Authorization": f"Bearer {self.api_key}",
         }
