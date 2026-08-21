@@ -1,5 +1,7 @@
 # answer-chat-history-bot
 
+![answer-chat-history-bot](docs/answer-chat-history-bot.png)
+
 Bot to answer questions on the Telegram chat history.
 
 Full design in [docs/PLAN.md](docs/PLAN.md). The whole pipeline — ingest, index,
