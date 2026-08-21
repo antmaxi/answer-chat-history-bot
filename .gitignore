@@ -3,7 +3,7 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-# answer-bot: local database and private Telegram exports — never commit chat data
+# answer-chat-history-bot: local database and private Telegram exports — never commit chat data
 *.db
 *.db-wal
 *.db-shm

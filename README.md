@@ -1,4 +1,4 @@
-# answer-bot
+# answer-chat-history-bot
 
 Bot to answer questions on the Telegram chat history.
 
@@ -253,7 +253,7 @@ setup.
 - **`ANTHROPIC_API_KEY`**, **`GEMINI_API_KEY`** (or **`GOOGLE_API_KEY`**),
   **`GROQ_API_KEY`**, **`OPENROUTER_API_KEY`** — key for the chosen
   provider. Unused keys can be left empty.
-- **`OPENROUTER_HTTP_REFERER`** / **`OPENROUTER_APP_TITLE`** (`answer-bot`)
+- **`OPENROUTER_HTTP_REFERER`** / **`OPENROUTER_APP_TITLE`** (`answer-chat-history-bot`)
   — optional OpenRouter attribution headers. Referer is omitted unless set.
 - **`ANSWER_MODEL`** — model id. Defaults: Claude `claude-sonnet-5`, Gemini
   `gemini-2.5-flash`, Groq `openai/gpt-oss-20b`, OpenRouter

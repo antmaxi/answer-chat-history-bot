@@ -321,7 +321,7 @@ class TestOpenAICompat:
         monkeypatch.setattr(config, "OPENROUTER_API_KEY", "or-env")
         monkeypatch.setattr(config, "ANSWER_MODEL", "openai/gpt-oss-20b")
         monkeypatch.setattr(config, "OPENROUTER_HTTP_REFERER", "")
-        monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "answer-bot")
+        monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "answer-chat-history-bot")
 
         groq = GroqLLM()
         assert groq.api_key == "gsk-env"
@@ -331,7 +331,7 @@ class TestOpenAICompat:
         router = OpenRouterLLM()
         assert router.api_key == "or-env"
         assert router.base_url == "https://openrouter.ai/api/v1"
-        assert router.extra_headers == {"X-Title": "answer-bot"}
+        assert router.extra_headers == {"X-Title": "answer-chat-history-bot"}
 
     def test_groq_complete(self, monkeypatch):
         from answerbot.llm import GroqLLM
@@ -354,7 +354,7 @@ class TestOpenAICompat:
         from answerbot.llm import OpenRouterLLM
 
         monkeypatch.setattr(config, "OPENROUTER_HTTP_REFERER", "https://example.test")
-        monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "answer-bot")
+        monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "answer-chat-history-bot")
         llm = OpenRouterLLM(api_key="sk-or", model="openai/gpt-oss-20b:free")
         text, cap = self._complete(
             llm,
@@ -365,7 +365,7 @@ class TestOpenAICompat:
         assert cap["url"] == "https://openrouter.ai/api/v1/chat/completions"
         headers = {k.lower(): v for k, v in cap["headers"].items()}
         assert headers["http-referer"] == "https://example.test"
-        assert headers["x-title"] == "answer-bot"
+        assert headers["x-title"] == "answer-chat-history-bot"
         assert headers["authorization"] == "Bearer sk-or"
 
     def test_empty_response_raises(self, monkeypatch):

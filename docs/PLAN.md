@@ -1,4 +1,4 @@
-# answer-bot — system plan
+# answer-chat-history-bot — system plan
 
 A Telegram bot that answers questions from a chat's own message history.
 The v1 pipeline (ingest → index → retrieve → answer → bot + live ingest) is
