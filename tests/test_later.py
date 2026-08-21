@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from answerbot import config, db, followup, index, membership, people, retrieve
-from tests.make_fixture import build_export
+from tests.make_fixture import build_export, record_fixture_names
 from answerbot.ingest.export import load_data
 from answerbot.ingest import live
 
@@ -79,14 +79,16 @@ class TestSpeakerSearch:
     def test_filters_to_named_speaker(self, conn, fake_embed):
         gap = config.WINDOW_GAP_SECONDS + 10
         conn.executemany(
-            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, ?, ?, ?, ?)",
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, sender_id, text) VALUES (1, ?, ?, ?, ?, ?)",
             [
-                (1, 0, "Anna", "the pangolin is in the attic"),
-                (2, 5, "Anna", "I saw it yesterday"),
-                (3, gap, "Nino", "the armadillo lives by the river"),
-                (4, gap + 5, "Nino", "do not feed it"),
+                (1, 0, "Anna", 10, "the pangolin is in the attic"),
+                (2, 5, "Anna", 10, "I saw it yesterday"),
+                (3, gap, "Nino", 20, "the armadillo lives by the river"),
+                (4, gap + 5, "Nino", 20, "do not feed it"),
             ],
         )
+        people.record(conn, 10, "Anna", None, "live")
+        people.record(conn, 20, "Nino", None, "live")
         conn.commit()
         index.reindex(conn, progress=False)
 
@@ -104,6 +106,7 @@ class TestSpeakerSearch:
 
     def test_fixture_nino_standup(self, conn, fake_embed):
         load_data(conn, build_export(), source="fixture")
+        record_fixture_names(conn)
         index.reindex(conn, progress=False)
         hits = retrieve.search(conn, "what did Nino say about standup")
         blob = "\n".join(h.text for h in hits).lower()

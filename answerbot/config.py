@@ -34,9 +34,11 @@ WINDOW_OVERLAP = int(os.getenv("WINDOW_OVERLAP", "2"))
 UPDATE_LOOKBACK_DAYS = int(os.getenv("UPDATE_LOOKBACK_DAYS", "14"))
 
 # How speakers are labelled in windows and answers:
-#   "name"  resolved real name, falling back to the export label (default)
-#   "id"    stable anonymous "User N" (see aliases table) — no names, no real id
-SPEAKER_LABEL = os.getenv("SPEAKER_LABEL", "name")
+#   "name"    resolved public name, else stable "User N" (default).
+#             Never the exporter's contact labels.
+#   "id"      always "User N" — no names at all
+#   "export"  resolved public name, else the export/contact label (opt-in)
+SPEAKER_LABEL = os.getenv("SPEAKER_LABEL", "name").strip().lower()
 
 # Retrieval
 TOP_K = int(os.getenv("TOP_K", "8"))

@@ -8,7 +8,7 @@ import pytest
 from answerbot import config, cooldown, db, eval as ev, index, retrieve
 from answerbot.ingest.export import load_data
 from answerbot.timerange import parse_time_range
-from tests.make_fixture import build_export
+from tests.make_fixture import build_export, record_fixture_names
 from tests.test_pipeline import seed
 
 
@@ -37,6 +37,7 @@ def fake_embed(monkeypatch):
 
 def test_golden_set_keyword_success(conn, fake_embed):
     load_data(conn, build_export(), source="fixture")
+    record_fixture_names(conn)
     index.reindex(conn, progress=False)
     results = ev.evaluate(conn, keyword_only=True)
     missed = [r.case.question for r in results if not r.hit]

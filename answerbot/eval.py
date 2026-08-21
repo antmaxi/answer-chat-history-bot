@@ -89,10 +89,11 @@ def main() -> None:
         root = Path(__file__).resolve().parents[1]
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
-        from tests.make_fixture import build_export
+        from tests.make_fixture import build_export, record_fixture_names
 
         conn = db.connect(":memory:")
         load_data(conn, build_export(), source="fixture")
+        record_fixture_names(conn)
         index.reindex(conn, progress=True)
     else:
         conn = db.connect()

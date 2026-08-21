@@ -1,18 +1,18 @@
 """Resolve people's real display names, overriding the export's private labels.
 
 A Telegram Desktop export stores each message's `from` as the name the exporting
-account had saved — so contacts appear under that account's private labels, which
-then leak into embeddings, prompts, and answers shown to everyone. This module
-keeps a `people` table, keyed by the stable telegram user id, mapping to a real
-display name from one of three sources (most to least trusted):
+account had saved — so contacts appear under that account's private labels. This
+module keeps a `people` table, keyed by the stable telegram user id, mapping to
+a real public display name from one of three sources (most to least trusted):
 
   manual  a mapping you supply and edit by hand (--import)
   api     resolved via the Bot API (the bot's /resolve command)
   live    picked up automatically from incoming messages as people post
 
 A more trusted name is never clobbered by a less trusted one. Indexing renders
-windows through this map (see index.render), so resolved names replace the
-labels after a reindex.
+windows through this map (see index.render). Unresolved people are shown as
+stable "User N" aliases unless SPEAKER_LABEL=export, which opts back into the
+exporter's contact labels.
 """
 
 import re
@@ -60,12 +60,20 @@ def name_map(conn: sqlite3.Connection) -> dict[int, str]:
 
 
 def resolve(names: dict[int, str], sender_id: int | None, fallback: str) -> str:
-    """Resolved name for a sender, or the export label if we don't have one."""
+    """Resolved name for a sender, or `fallback` if we don't have one."""
     if sender_id is not None:
         name = names.get(sender_id)
         if name:
             return name
     return fallback
+
+
+def alias_label(sender_id: int | None, aliases: dict[int, int] | None = None) -> str:
+    """Stable anonymous "User N", never the real telegram id when an ordinal exists."""
+    if sender_id is None:
+        return "User unknown"
+    ordinal = (aliases or {}).get(sender_id)
+    return f"User {ordinal}" if ordinal is not None else f"User #{sender_id}"
 
 
 def ensure_aliases(conn: sqlite3.Connection, sender_ids) -> None:
@@ -94,14 +102,19 @@ def alias_map(conn: sqlite3.Connection) -> dict[int, int]:
 
 
 def known_speakers(conn: sqlite3.Connection) -> list[str]:
-    """Display names we might see in a 'what did X say' question, longest first."""
+    """Display names we might see in a 'what did X say' question, longest first.
+
+    Export/contact labels are included only under SPEAKER_LABEL=export, matching
+    what actually appears in window speaker fields.
+    """
     names: set[str] = set()
     for (n,) in conn.execute("SELECT display_name FROM people WHERE display_name != ''"):
         names.add(n)
-    for (n,) in conn.execute(
-        "SELECT DISTINCT sender FROM messages WHERE sender IS NOT NULL AND sender != ''"
-    ):
-        names.add(n)
+    if config.SPEAKER_LABEL == "export":
+        for (n,) in conn.execute(
+            "SELECT DISTINCT sender FROM messages WHERE sender IS NOT NULL AND sender != ''"
+        ):
+            names.add(n)
     return sorted(names, key=lambda s: (-len(s), s.lower()))
 
 
@@ -136,22 +149,25 @@ def parse_speaker(question: str, names: list[str]) -> str | None:
 def speaker_label(
     names: dict[int, str],
     sender_id: int | None,
-    fallback: str,
+    fallback: str = "",
     mode: str | None = None,
     aliases: dict[int, int] | None = None,
 ) -> str:
     """How a speaker is shown, honouring SPEAKER_LABEL.
 
-    In "id" mode nobody's name appears at all — not resolved names, not export
-    labels — only a stable anonymous "User N" from the aliases table (assigned by
-    ensure_aliases), so the label never exposes the real telegram id.
+    name     resolved public name, else "User N". Contact/export labels are ignored.
+    id       always "User N" — not resolved names, not export labels.
+    export   resolved public name, else the stored export/contact label (opt-in).
     """
-    if (mode or config.SPEAKER_LABEL) == "id":
-        if sender_id is None:
-            return "User unknown"
-        ordinal = (aliases or {}).get(sender_id)
-        return f"User {ordinal}" if ordinal is not None else f"User #{sender_id}"
-    return resolve(names, sender_id, fallback)
+    mode = (mode or config.SPEAKER_LABEL or "name").strip().lower()
+    if mode == "id":
+        return alias_label(sender_id, aliases)
+    resolved = resolve(names, sender_id, "")
+    if resolved:
+        return resolved
+    if mode == "export" and fallback:
+        return fallback
+    return alias_label(sender_id, aliases)
 
 
 # --- Local, no-API workflow: dump a template, edit it, load it back ----------
@@ -222,7 +238,7 @@ def main() -> None:
         resolved = sum(by_src.values())
         print(f"people in chat: {total}")
         print(f"resolved names: {resolved} ({by_src})")
-        print(f"still on export labels: {total - resolved}")
+        print(f"unresolved (User N unless SPEAKER_LABEL=export): {total - resolved}")
 
 
 if __name__ == "__main__":

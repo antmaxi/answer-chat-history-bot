@@ -295,7 +295,7 @@ async def cmd_resolve(message: Message, bot: Bot) -> None:
     """Look up members' real names via the Bot API, replacing export labels.
 
     Only people still in the configured group can be looked up; anyone who left
-    keeps their export label.
+    is shown as User N (unless SPEAKER_LABEL=export).
     """
     if not await _ensure_member(message, bot):
         return

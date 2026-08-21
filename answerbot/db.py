@@ -74,8 +74,9 @@ CREATE TABLE IF NOT EXISTS people (
   updated_at   INTEGER NOT NULL
 );
 
--- Stable anonymous ordinals for SPEAKER_LABEL=id: a sequential "User N" that is
--- assigned once and never changes, so it doesn't expose the real telegram id.
+-- Stable anonymous ordinals for SPEAKER_LABEL=id, and the fallback under
+-- SPEAKER_LABEL=name: a sequential "User N" assigned once so it doesn't
+-- expose the real telegram id or the exporter's contact labels.
 CREATE TABLE IF NOT EXISTS aliases (
   sender_id INTEGER PRIMARY KEY,
   ordinal   INTEGER NOT NULL UNIQUE

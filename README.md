@@ -89,8 +89,9 @@ below), so `--update` is mainly for bulk top-ups from a fresh export.
 
 A Telegram export records each sender under the name the **exporting account**
 had saved for them — so contacts show up under that account's private labels,
-not their real public names, and those labels then end up in embeddings,
-prompts, and answers. The export itself has no public names, only a stable user
+not their real public names. Those labels are **not** used in embeddings,
+prompts, or answers unless you set `SPEAKER_LABEL=export`. Unresolved people
+render as `User N`. The export itself has no public names, only a stable user
 id, so real names have to come from elsewhere. Three ways to supply them, keyed
 by that id:
 
@@ -111,12 +112,13 @@ by that id:
 `python -m answerbot.people --stats` shows how many are resolved. A name you set
 by hand is never overwritten by a live sighting. Names live in the window text,
 so changes take effect on the next (re)index — a full `index` to apply them
-everywhere, or `--update` for just the recent tail.
+everywhere, or `--update` for just the recent tail. Anyone not yet resolved is
+shown as `User N`.
 
 #### Or drop names entirely
 
-To show speakers as anonymous ids instead of any name — resolved names *and*
-export labels suppressed everywhere — set `SPEAKER_LABEL=id`:
+To show speakers as anonymous ids instead of any name — resolved names
+suppressed everywhere — set `SPEAKER_LABEL=id`:
 
 ```bash
 SPEAKER_LABEL=id python -m answerbot.index          # or: python -m answerbot.index --speaker-label id
@@ -127,6 +129,9 @@ Speakers then render as `User N`, a stable sequential pseudonym (stored in the
 together, without exposing anyone's real telegram id. Set it in `.env` so the
 bot uses it too. Caveat: this anonymizes the *speaker label* only — message
 **text** can still contain names or `@mentions` that people typed, left as-is.
+
+To use the exporter's contact labels after all (the old fallback), set
+`SPEAKER_LABEL=export` and reindex.
 
 ## Running the bot
 
@@ -226,10 +231,12 @@ Change these, then run a full `index`.
 
 ### Speaker names
 
-- **`SPEAKER_LABEL`** (`name`) — `name` uses the resolved real name, falling
-  back to the export label. `id` renders stable anonymous `User N` aliases
-  instead (see [Or drop names entirely](#or-drop-names-entirely)). Names live
-  in window text, so a reindex is required after changing this.
+- **`SPEAKER_LABEL`** (`name`) — `name` uses the resolved public name, falling
+  back to a stable `User N` alias (never the exporter's contact label). `id`
+  renders `User N` even for resolved people. `export` uses the public name,
+  falling back to the export/contact label (opt-in; see
+  [Or drop names entirely](#or-drop-names-entirely)). Names live in window
+  text, so a reindex is required after changing this.
 
 ### Retrieval
 

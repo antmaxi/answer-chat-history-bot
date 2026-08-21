@@ -83,5 +83,17 @@ def build_export() -> dict:
             "messages": messages}
 
 
+def record_fixture_names(conn) -> None:
+    """Treat the fixture's `from` fields as public names (they are, in this file)."""
+    from answerbot import people
+
+    for r in conn.execute(
+        "SELECT DISTINCT sender_id, sender FROM messages "
+        "WHERE sender_id IS NOT NULL AND sender != ''"
+    ):
+        people.record(conn, r["sender_id"], r["sender"], None, "live")
+    conn.commit()
+
+
 if __name__ == "__main__":
     print(json.dumps(build_export(), ensure_ascii=False))

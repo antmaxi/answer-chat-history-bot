@@ -369,9 +369,17 @@ class TestPeopleNames:
         names = people.name_map(conn)
         assert people.resolve(names, 42, "Private Label") == "Real Name"
 
-    def test_resolve_falls_back_to_export_label(self, conn):
+    def test_resolve_falls_back_to_given_string(self, conn):
         assert people.resolve({}, 42, "Private Label") == "Private Label"
         assert people.resolve({}, None, "Private Label") == "Private Label"
+
+    def test_name_mode_falls_back_to_alias_not_contact(self):
+        assert people.speaker_label({}, 7, "Private Label", mode="name", aliases={7: 3}) == "User 3"
+        assert people.speaker_label({}, None, "Private Label", mode="name") == "User unknown"
+
+    def test_export_mode_uses_contact_as_fallback(self):
+        assert people.speaker_label({7: "Victor"}, 7, "Private Label", mode="export") == "Victor"
+        assert people.speaker_label({}, 7, "Private Label", mode="export") == "Private Label"
 
     def test_more_trusted_source_wins_and_is_kept(self, conn):
         people.record(conn, 1, "Live Name", None, "live")
@@ -386,10 +394,11 @@ class TestPeopleNames:
             {"ts": 0, "sender": "Vutyan нейроэкономика Витя", "sender_id": 7, "text": "hi"},
             {"ts": 1, "sender": "Unknown Label", "sender_id": 8, "text": "yo"},
         ]
-        out = render(msgs, names={7: "Victor"})
+        out = render(msgs, names={7: "Victor"}, mode="name", aliases={7: 1, 8: 2})
         assert "Victor: hi" in out
         assert "Vutyan" not in out          # private label replaced
-        assert "Unknown Label: yo" in out    # unresolved sender keeps its label
+        assert "User 2: yo" in out          # unresolved sender is User N, not the contact label
+        assert "Unknown Label" not in out
 
     def test_id_mode_uses_stable_alias_not_real_id(self):
         # even a resolved name is suppressed, and the label is the ordinal, not the id
@@ -399,6 +408,18 @@ class TestPeopleNames:
 
     def test_name_mode_still_resolves(self):
         assert people.speaker_label({7: "Victor"}, 7, "Label", mode="name") == "Victor"
+
+    def test_known_speakers_omit_contact_labels(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "SPEAKER_LABEL", "name")
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, sender_id, text) "
+            "VALUES (1, 1, 1, 'Private Label', 99, 'hi')"
+        )
+        people.record(conn, 99, "Victor", None, "live")
+        conn.commit()
+        assert people.known_speakers(conn) == ["Victor"]
+        monkeypatch.setattr(config, "SPEAKER_LABEL", "export")
+        assert "Private Label" in people.known_speakers(conn)
 
     def test_ensure_aliases_is_stable(self, conn):
         people.ensure_aliases(conn, [500, 100, 300])
@@ -421,7 +442,7 @@ class TestPeopleNames:
         assert "Victor" not in out and "Vutyan" not in out and "Some Label" not in out
         assert "User 7" not in out and "User 8" not in out  # real ids never shown
 
-    def test_reindex_id_mode(self, conn, monkeypatch):
+    def test_reindex_id_mode(self, conn, monkeypatch, fake_embed):
         monkeypatch.setattr(config, "SPEAKER_LABEL", "id")
         seed(conn, [(1, 0, "hello")])
         conn.execute("UPDATE messages SET sender='Private Label', sender_id=99")
@@ -429,18 +450,37 @@ class TestPeopleNames:
         people.record(conn, 99, "Actual Person", None, "manual")
         conn.commit()
 
-        import numpy as np
-        from answerbot import embed
-        monkeypatch.setattr(
-            embed, "encode_passages",
-            lambda texts, **k: np.zeros((len(texts), config.EMBED_DIM), np.float32),
-        )
         index.reindex(conn, progress=False)
 
         row = conn.execute("SELECT text, speakers FROM windows WHERE chat_id=1").fetchone()
         assert row["speakers"] == "User 1"             # ordinal, not the id 99
         assert "99" not in row["text"]                  # real id never leaks
         assert "Actual Person" not in row["text"] and "Private Label" not in row["text"]
+
+    def test_reindex_name_mode_skips_contact_labels(self, conn, monkeypatch, fake_embed):
+        monkeypatch.setattr(config, "SPEAKER_LABEL", "name")
+        seed(conn, [(1, 0, "hello")])
+        conn.execute("UPDATE messages SET sender='Private Label', sender_id=99")
+        conn.commit()
+
+        index.reindex(conn, progress=False)
+
+        row = conn.execute("SELECT text, speakers FROM windows WHERE chat_id=1").fetchone()
+        assert row["speakers"] == "User 1"
+        assert "Private Label" not in row["text"]
+        assert "99" not in row["text"]
+
+    def test_reindex_export_mode_keeps_contact_labels(self, conn, monkeypatch, fake_embed):
+        monkeypatch.setattr(config, "SPEAKER_LABEL", "export")
+        seed(conn, [(1, 0, "hello")])
+        conn.execute("UPDATE messages SET sender='Private Label', sender_id=99")
+        conn.commit()
+
+        index.reindex(conn, progress=False)
+
+        row = conn.execute("SELECT text, speakers FROM windows WHERE chat_id=1").fetchone()
+        assert row["speakers"] == "Private Label"
+        assert "Private Label" in row["text"]
 
     def test_load_mapping_counts_written(self, conn):
         n = people.load_mapping(conn, [
