@@ -38,6 +38,8 @@ _db_lock = threading.Lock()
 # search can proceed while SentenceTransformer is running.
 _index_lock = asyncio.Lock()
 _answers = cooldown.Cooldown(config.ANSWER_COOLDOWN_SECONDS)
+_user_quota = cooldown.Quota(config.ANSWER_MAX_PER_USER_PER_HOUR)
+_global_quota = cooldown.Quota(config.ANSWER_MAX_PER_HOUR)
 _members = membership.MembershipCache(config.MEMBERSHIP_CACHE_SECONDS)
 _history: dict[tuple[int, int], deque[str]] = defaultdict(lambda: deque(maxlen=4))
 _admin_errors = adminlog.AdminErrorHandler()
@@ -196,6 +198,27 @@ async def _align_export_chat_ids() -> None:
         _members.invalidate()
 
 
+def _fmt_quota_wait(seconds: float) -> str:
+    if seconds < 60:
+        return f"{int(seconds) + 1}s"
+    return f"{(int(seconds) + 59) // 60} min"
+
+
+def _quota_block(user_id: int) -> str | None:
+    """If this LLM call would exceed a quota, the reply to send; else consume a slot."""
+    exempt = user_id in config.ADMIN_USER_IDS
+    wait = _user_quota.remaining((user_id,), exempt=exempt)
+    if wait > 0:
+        return f"Hourly limit reached. Try again in {_fmt_quota_wait(wait)}."
+    wait = _global_quota.remaining((), exempt=exempt)
+    if wait > 0:
+        return f"The bot's hourly limit is reached. Try again in {_fmt_quota_wait(wait)}."
+    if not exempt:
+        _user_quota.touch((user_id,))
+        _global_quota.touch(())
+    return None
+
+
 async def respond(message: Message, question: str, chat_id: int | list[int]) -> None:
     if not question.strip():
         await message.reply("Ask me a question about this chat's history.")
@@ -226,6 +249,11 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         # then call the LLM without holding either lock.
         await index_chats(chat_id)
         hits = await _db(retrieve.search, conn, search_q, chat_id)
+        if hits:
+            blocked = _quota_block(user_id)
+            if blocked:
+                await thinking.edit_text(blocked)
+                return
 
         def complete():
             return answer.complete_answer(question, hits)

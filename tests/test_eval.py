@@ -112,6 +112,38 @@ class TestCooldown:
         assert cooldown.Cooldown(0).remaining((1,), now=1.0) == 0.0
 
 
+class TestQuota:
+    def test_allows_then_blocks_until_window(self):
+        q = cooldown.Quota(2, window=10)
+        key = (7,)
+        assert q.remaining(key, now=100.0) == 0.0
+        q.touch(key, now=100.0)
+        q.touch(key, now=101.0)
+        assert q.remaining(key, now=101.0) == pytest.approx(9.0)
+        assert q.remaining(key, now=110.0) == 0.0
+
+    def test_keys_are_independent(self):
+        q = cooldown.Quota(1, window=10)
+        q.touch((1,), now=0.0)
+        assert q.remaining((1,), now=1.0) > 0
+        assert q.remaining((2,), now=1.0) == 0.0
+
+    def test_exempt_and_disabled(self):
+        q = cooldown.Quota(1, window=10)
+        q.touch((1,), now=0.0)
+        assert q.remaining((1,), now=1.0, exempt=True) == 0.0
+        assert cooldown.Quota(0).remaining((1,), now=1.0) == 0.0
+        cooldown.Quota(0).touch((1,), now=1.0)
+
+    def test_oldest_hit_frees_a_slot(self):
+        q = cooldown.Quota(2, window=10)
+        q.touch((1,), now=0.0)
+        q.touch((1,), now=1.0)
+        assert q.remaining((1,), now=10.0) == 0.0
+        q.touch((1,), now=10.0)
+        assert q.remaining((1,), now=10.0) == pytest.approx(1.0)
+
+
 class TestQueryLog:
     def test_answer_writes_a_row(self, conn, fake_embed):
         from answerbot.answer import answer as run_answer

@@ -80,6 +80,9 @@ ANSWER_MAX_TOKENS = int(os.getenv("ANSWER_MAX_TOKENS", "8192"))
 ANSWER_MAX_REQUEST_TOKENS = int(os.getenv("ANSWER_MAX_REQUEST_TOKENS", "0"))
 # Seconds a user must wait between answers in the same chat. 0 disables.
 ANSWER_COOLDOWN_SECONDS = int(os.getenv("ANSWER_COOLDOWN_SECONDS", "8"))
+# Sliding-hour caps on LLM answers (not local search). 0 disables. Admins skip.
+ANSWER_MAX_PER_USER_PER_HOUR = int(os.getenv("ANSWER_MAX_PER_USER_PER_HOUR", "0"))
+ANSWER_MAX_PER_HOUR = int(os.getenv("ANSWER_MAX_PER_HOUR", "0"))
 # Persist each question + retrieved window ids locally. "0" / "false" turns it off.
 QUERY_LOG = os.getenv("QUERY_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))

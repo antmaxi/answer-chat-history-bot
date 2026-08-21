@@ -171,6 +171,8 @@ Anna & Nino:` headers; the bot turns `[W3]` into `t.me/c/<chat>/<msg_id>` links.
 - Commands: `/ask`, `/stats`; admins `/reindex` (lookback)
   and `/reindex full`, `/resolve` (Bot API names).
 - Per-user-per-chat cooldown (`ANSWER_COOLDOWN_SECONDS`); admins exempt.
+- Sliding-hour LLM caps (`ANSWER_MAX_PER_USER_PER_HOUR`, `ANSWER_MAX_PER_HOUR`);
+  admins exempt. In-memory, counted only when retrieval returned windows.
 - Admins are DMed `Bot is up` / `Bot is down` on polling start and graceful
   stop, and any `ERROR` log line (message + traceback). Error DMs are
   coalesced (~20s) so a tight loop cannot flood Telegram. They must have

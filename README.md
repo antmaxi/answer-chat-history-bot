@@ -290,6 +290,13 @@ setup.
   `ANSWER_MAX_REQUEST_TOKENS` if you are on Dev Tier.
 - **`ANSWER_COOLDOWN_SECONDS`** (`8`) — per-user wait between answers in
   the same chat. `0` disables. Admins skip the cooldown.
+- **`ANSWER_MAX_PER_USER_PER_HOUR`** (`0`) — sliding-hour cap on LLM
+  answers per Telegram user (group and DM share the count). `0` disables.
+  Counts only when retrieval found windows, so empty "not in history"
+  replies are free. Admins skip it. In-memory; resets when the process
+  restarts.
+- **`ANSWER_MAX_PER_HOUR`** (`0`) — same window, for the whole bot, so
+  many members cannot add up to a drain. `0` disables. Admins skip it.
 - **`QUERY_LOG`** (`1`) — persist each question and the retrieved window ids
   locally. `0` / `false` / `off` turns it off.
 - **`LLM_TIMEOUT`** (`60`) — seconds to wait for the provider.
@@ -307,7 +314,8 @@ setup.
 - **`ADMIN_USER_IDS`** — numeric Telegram user ids (space- or
   comma-separated). Those accounts get `Bot is up` / `Bot is down` DMs and
   ERROR logs with traceback; they can run `/reindex` and skip the answer
-  cooldown. Open a DM with the bot first so it can write to you.
+  cooldown and hourly quotas. Open a DM with the bot first so it can write
+  to you.
 - **`LIVE_REINDEX_EVERY`** (`20`) — new messages that may accumulate before
   the open tail is re-windowed.
 - **`LIVE_LOOKBACK_HOURS`** (`6`) — how often to rebuild the last
