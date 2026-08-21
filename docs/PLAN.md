@@ -103,7 +103,7 @@ CREATE TABLE aliases (               -- SPEAKER_LABEL=id → stable "User N"
   ordinal   INTEGER NOT NULL UNIQUE
 );
 
-CREATE TABLE dm_prefs (              -- /chat focus in DM
+CREATE TABLE dm_prefs (              -- leftover DM focus; unused (one chat)
   user_id INTEGER PRIMARY KEY,
   chat_id INTEGER NOT NULL
 );
@@ -154,16 +154,16 @@ Anna & Nino:` headers; the bot turns `[W3]` into `t.me/c/<chat>/<msg_id>` links.
 
 ## Bot behaviour
 
-- **Group**: replies when @mentioned or when someone replies to its message.
-  Privacy mode **off** in BotFather, otherwise it receives nothing. Incoming
-  messages and edits are ingested; the tail re-windows every `LIVE_REINDEX_EVERY`
-  messages. Every `LIVE_LOOKBACK_HOURS` the last `UPDATE_LOOKBACK_DAYS` are
-  rebuilt so recent edits self-heal. Telegram does not send group deletes to bots.
-- **DM**: any plain message is a question. Search is an allow-list of indexed
-  chats the user currently belongs to (`getChatMember`, TTL-cached). `/chats`
-  lists them; `/chat N` or `/chat <id>` focuses one; `/chat all` searches every
-  membership. An empty allow-list returns no hits.
-- Commands: `/ask`, `/stats`, `/chats`, `/chat`; admins `/reindex` (lookback)
+- **Group**: replies when @mentioned or when someone replies to its message,
+  and only in `TELEGRAM_CHAT_ID`. Privacy mode **off** in BotFather, otherwise
+  it receives nothing. Incoming messages and edits are ingested; the tail
+  re-windows every `LIVE_REINDEX_EVERY` messages. Every `LIVE_LOOKBACK_HOURS`
+  the last `UPDATE_LOOKBACK_DAYS` are rebuilt so recent edits self-heal.
+  Telegram does not send group deletes to bots.
+- **DM**: any plain message is a question if the sender is a member of
+  `TELEGRAM_CHAT_ID` (`getChatMember`, TTL-cached). Non-members are declined.
+  Search always uses that chat.
+- Commands: `/ask`, `/stats`; admins `/reindex` (lookback)
   and `/reindex full`, `/resolve` (Bot API names).
 - Per-user-per-chat cooldown (`ANSWER_COOLDOWN_SECONDS`); admins exempt.
 - Admins are DMed `Bot is up` / `Bot is down` on polling start and graceful

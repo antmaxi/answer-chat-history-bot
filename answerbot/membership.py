@@ -4,6 +4,19 @@ from __future__ import annotations
 
 import time
 
+# Bot API ChatMember.status values that mean the user is currently in the chat.
+_IN_CHAT = {"creator", "administrator", "member"}
+
+
+def is_chat_member(member) -> bool:
+    """True if a getChatMember result is someone still in the chat."""
+    status = getattr(member, "status", None)
+    if status in _IN_CHAT:
+        return True
+    if status == "restricted":
+        return bool(getattr(member, "is_member", False))
+    return False
+
 
 class MembershipCache:
     """Remember whether a user is in a chat, so DM ACL does not hammer the API."""

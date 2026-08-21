@@ -133,12 +133,14 @@ bot uses it too. Caveat: this anonymizes the *speaker label* only — message
 1. Create a bot with @BotFather and copy the token.
 2. **Turn privacy mode OFF** (BotFather → Bot Settings → Group Privacy), or the
    bot receives no group messages to read or index.
-3. Set `TELEGRAM_BOT_TOKEN`, `ADMIN_USER_IDS` (your numeric Telegram user id),
+3. Set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (the supergroup's Bot API id,
+   e.g. `-1001234567890`; a positive id is treated as `-100<id>`),
+   `ADMIN_USER_IDS` (your numeric Telegram user id),
    and an LLM key (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, or
    `OPENROUTER_API_KEY`) in `.env`. Open a DM with the bot so it can send you
    `Bot is up` / `Bot is down` when polling starts or stops, and any logged
    error with its traceback.
-4. Add the bot to your group, then run:
+4. Add the bot to that group, then run:
 
 ```bash
 python -m answerbot.bot
@@ -146,12 +148,12 @@ python -m answerbot.bot
 
 Or `docker compose up -d` if you followed [Docker](#docker) above.
 
-In a group it answers when @mentioned or replied to. In a DM it answers if you
-belong to a chat it has indexed — `/chats` lists those chats, `/chat N` focuses
-one, `/chat all` searches every chat you are in. New group messages are appended
-live; the tail is re-windowed every `LIVE_REINDEX_EVERY` messages, and every
-`LIVE_LOOKBACK_HOURS` the last couple of weeks are rebuilt so recent edits
-self-heal. `/stats` and (for admins) `/reindex` / `/reindex full` are available.
+In the group it answers when @mentioned or replied to. In a DM it answers only
+if you are currently a member of `TELEGRAM_CHAT_ID`; otherwise it declines.
+New group messages are appended live; the tail is re-windowed every
+`LIVE_REINDEX_EVERY` messages, and every `LIVE_LOOKBACK_HOURS` the last couple
+of weeks are rebuilt so recent edits self-heal. `/stats` and (for admins)
+`/reindex` / `/reindex full` are available.
 
 ## Switching the answer model
 
@@ -282,6 +284,9 @@ setup.
 
 - **`TELEGRAM_BOT_TOKEN`** — from @BotFather. Required to run the bot.
   Privacy mode must be **off** or the bot sees no group messages.
+- **`TELEGRAM_CHAT_ID`** — the one supergroup the bot serves. Use the Bot API
+  id (`-100…`). A positive id is stored as `-100<id>`. Search, live ingest,
+  and DM access are all pinned to this chat.
 - **`ADMIN_USER_IDS`** — numeric Telegram user ids (space- or
   comma-separated). Those accounts get `Bot is up` / `Bot is down` DMs and
   ERROR logs with traceback; they can run `/reindex` and skip the answer
@@ -292,7 +297,9 @@ setup.
   `UPDATE_LOOKBACK_DAYS` of history so recent edits self-heal. `0` disables
   the periodic pass (tail reindex still runs).
 - **`MEMBERSHIP_CACHE_SECONDS`** (`300`) — how long a "is this user in this
-  chat?" Bot API lookup is remembered, used to decide who may ask in DM.
+  chat?" Bot API lookup is remembered. DMs (`/start`, `/ask`, `/stats`, and
+  questions) are declined unless `getChatMember` says the user is in
+  `TELEGRAM_CHAT_ID`.
 
 ## Tests
 

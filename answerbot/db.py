@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS aliases (
   ordinal   INTEGER NOT NULL UNIQUE
 );
 
--- DM: last chat the user chose with /chat, so multi-chat search stays scoped.
+-- DM: last chat the user chose with /chat (unused; the bot is pinned to one chat).
 CREATE TABLE IF NOT EXISTS dm_prefs (
   user_id INTEGER PRIMARY KEY,
   chat_id INTEGER NOT NULL

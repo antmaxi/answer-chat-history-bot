@@ -115,6 +115,20 @@ class TestSpeakerSearch:
         assert "postgres" not in blob
 
 
+class TestTelegramChatId:
+    def test_empty_is_none(self):
+        assert config.parse_telegram_chat_id(None) is None
+        assert config.parse_telegram_chat_id("") is None
+        assert config.parse_telegram_chat_id("  ") is None
+
+    def test_bot_api_supergroup_is_kept(self):
+        assert config.parse_telegram_chat_id("-1001495905530") == -1001495905530
+
+    def test_positive_id_becomes_supergroup(self):
+        assert config.parse_telegram_chat_id("1495905530") == -1001495905530
+        assert config.parse_telegram_chat_id(" 1495905530 ") == -1001495905530
+
+
 class TestMembershipCache:
     def test_ttl_and_invalidate(self):
         c = membership.MembershipCache(10)
@@ -127,6 +141,17 @@ class TestMembershipCache:
         c.invalidate(user_id=1, chat_id=2)
         assert c.get(1, 2, now=21) is None
         assert c.get(1, 3, now=21) is True
+
+    def test_is_chat_member_statuses(self):
+        from types import SimpleNamespace
+
+        assert membership.is_chat_member(SimpleNamespace(status="member")) is True
+        assert membership.is_chat_member(SimpleNamespace(status="administrator")) is True
+        assert membership.is_chat_member(SimpleNamespace(status="creator")) is True
+        assert membership.is_chat_member(SimpleNamespace(status="restricted", is_member=True)) is True
+        assert membership.is_chat_member(SimpleNamespace(status="restricted", is_member=False)) is False
+        assert membership.is_chat_member(SimpleNamespace(status="left")) is False
+        assert membership.is_chat_member(SimpleNamespace(status="kicked")) is False
 
 
 class TestSchemaMigrate:

@@ -86,6 +86,19 @@ MEMBERSHIP_CACHE_SECONDS = float(os.getenv("MEMBERSHIP_CACHE_SECONDS", "300"))
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+
+def parse_telegram_chat_id(raw: str | None) -> int | None:
+    """Bot API chat id. A positive value is treated as a supergroup (`-100<id>`)."""
+    if raw is None or not str(raw).strip():
+        return None
+    n = int(str(raw).strip())
+    if n > 0:
+        return int(f"-100{n}")
+    return n
+
+
+TELEGRAM_CHAT_ID = parse_telegram_chat_id(os.getenv("TELEGRAM_CHAT_ID"))
 ADMIN_USER_IDS = {
     int(x) for x in os.getenv("ADMIN_USER_IDS", "").replace(",", " ").split() if x.strip()
 }

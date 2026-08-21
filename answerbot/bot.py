@@ -1,11 +1,11 @@
 """The Telegram bot: aiogram wrapper around retrieve + answer, plus live ingest.
 
-Group behaviour: replies only when @mentioned or when someone replies to one of
-its own messages, so it stays quiet otherwise. Requires privacy mode OFF in
+Pinned to one supergroup (`TELEGRAM_CHAT_ID`). Replies when @mentioned or when
+someone replies to one of its own messages. Requires privacy mode OFF in
 BotFather, or it receives no group messages to index at all.
 
-DM behaviour: any plain message is a question. Access is gated on membership of
-indexed chats, and search is restricted to those chats — never the whole DB.
+DM behaviour: any plain message is a question, if the sender is a member of
+that group. Search always runs against `TELEGRAM_CHAT_ID`.
 """
 
 import asyncio
@@ -24,7 +24,7 @@ from aiogram.types import Message
 
 from . import adminlog, answer, config, cooldown, db, embed, followup, index, logconfig, membership, people, retrieve
 from .ingest import live
-from .ingest.export import bot_api_candidates
+from .ingest.export import desktop_ids_for
 
 logconfig.setup()
 log = logging.getLogger("answerbot")
@@ -40,7 +40,6 @@ _index_lock = asyncio.Lock()
 _answers = cooldown.Cooldown(config.ANSWER_COOLDOWN_SECONDS)
 _members = membership.MembershipCache(config.MEMBERSHIP_CACHE_SECONDS)
 _history: dict[tuple[int, int], deque[str]] = defaultdict(lambda: deque(maxlen=4))
-_titles: dict[int, str] = {}
 _admin_errors = adminlog.AdminErrorHandler()
 
 
@@ -95,20 +94,51 @@ async def _periodic_lookback() -> None:
         await asyncio.sleep(hours * 3600)
         log.info("periodic lookback: last %s days", config.UPDATE_LOOKBACK_DAYS)
         try:
-            await index_chats(None, lookback=config.UPDATE_LOOKBACK_DAYS)
+            await index_chats(config.TELEGRAM_CHAT_ID, lookback=config.UPDATE_LOOKBACK_DAYS)
         except Exception:
             log.exception("periodic lookback failed")
 
 
-async def _chat_title(bot: Bot, chat_id: int) -> str:
-    if chat_id in _titles:
-        return _titles[chat_id]
+def _configured_chat() -> int:
+    chat_id = config.TELEGRAM_CHAT_ID
+    if chat_id is None:
+        raise RuntimeError("TELEGRAM_CHAT_ID is not set")
+    return chat_id
+
+
+def _is_configured_chat(chat_id: int) -> bool:
+    return chat_id == _configured_chat()
+
+
+async def _user_in_configured_chat(bot: Bot, user_id: int) -> bool:
+    """Whether this user is currently a member of TELEGRAM_CHAT_ID."""
+    chat_id = _configured_chat()
+    cached = _members.get(user_id, chat_id)
+    if cached is not None:
+        return cached
     try:
-        chat = await bot.get_chat(chat_id)
-        _titles[chat_id] = chat.title or str(chat_id)
+        member = await bot.get_chat_member(chat_id, user_id)
+        ok = membership.is_chat_member(member)
     except Exception:
-        _titles[chat_id] = str(chat_id)
-    return _titles[chat_id]
+        ok = False
+    _members.remember(user_id, chat_id, ok)
+    return ok
+
+
+_DECLINE = "You're not a member of the group this bot serves."
+
+
+async def _ensure_member(message: Message, bot: Bot) -> bool:
+    """Allow the configured group, or a DM from a current member. Otherwise decline."""
+    user = message.from_user
+    if user is None:
+        return False
+    if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return _is_configured_chat(message.chat.id)
+    if await _user_in_configured_chat(bot, user.id):
+        return True
+    await message.reply(_DECLINE)
+    return False
 
 
 def format_answer(result: answer.Answer) -> str:
@@ -145,69 +175,18 @@ def _record_person(sender_id, name, username, source="live") -> None:
     conn.commit()
 
 
-async def indexed_chats() -> set[int]:
-    return await _db(
-        lambda: {r[0] for r in conn.execute("SELECT DISTINCT chat_id FROM messages")}
-    )
-
-
-async def _align_export_chat_ids(bot: Bot) -> None:
-    """Rewrite Desktop-export chat ids to the Bot API form Telegram will accept.
-
-    getChat / getChatMember need `-100<id>` for a supergroup. An export stored
-    under the bare positive id looks like a chat the bot has never joined.
-    """
-    for cid in sorted(await indexed_chats()):
-        resolved = None
-        for candidate in bot_api_candidates(cid):
-            try:
-                await bot.get_chat(candidate)
-            except Exception:
-                continue
-            resolved = candidate
-            break
-        if resolved is None or resolved == cid:
-            continue
-        log.info("aligning desktop chat_id %s -> Bot API %s", cid, resolved)
-        await _db(db.remap_chat_id, conn, cid, resolved)
+async def _align_export_chat_ids() -> None:
+    """Rewrite a Desktop-export chat id onto TELEGRAM_CHAT_ID if it is still stored."""
+    target = _configured_chat()
+    moved = 0
+    for old in desktop_ids_for(target):
+        n = await _db(db.remap_chat_id, conn, old, target)
+        if n:
+            log.info("aligning desktop chat_id %s -> Bot API %s (%s messages)", old, target, n)
+            moved += n
+    if moved:
         retrieve.invalidate_cache()
         _members.invalidate()
-
-
-async def indexed_chats_for_user(bot: Bot, user_id: int) -> list[int]:
-    """Indexed chats this user is currently a member of.
-
-    This is the DM allow-list: search must not run over any other chat_id.
-    Membership is cached so a busy DM does not call getChatMember on every ask.
-    """
-    allowed: list[int] = []
-    for chat_id in sorted(await indexed_chats()):
-        cached = _members.get(user_id, chat_id)
-        if cached is True:
-            allowed.append(chat_id)
-            continue
-        if cached is False:
-            continue
-        try:
-            member = await bot.get_chat_member(chat_id, user_id)
-            ok = member.status not in ("left", "kicked")
-        except Exception:
-            ok = False
-        _members.remember(user_id, chat_id, ok)
-        if ok:
-            allowed.append(chat_id)
-    return allowed
-
-
-async def dm_scope(bot: Bot, user_id: int) -> list[int]:
-    """Allow-list for a DM, honoring /chat if it still points at a membership."""
-    allowed = await indexed_chats_for_user(bot, user_id)
-    pref = await _db(db.get_dm_chat, conn, user_id)
-    if pref is not None and pref in allowed:
-        return [pref]
-    if pref is not None:
-        await _db(db.set_dm_chat, conn, user_id, None)
-    return allowed
 
 
 async def respond(message: Message, question: str, chat_id: int | list[int]) -> None:
@@ -256,78 +235,28 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
 # --- Commands -------------------------------------------------------------
 
 @dp.message(Command("start", "help"))
-async def cmd_help(message: Message) -> None:
+async def cmd_help(message: Message, bot: Bot) -> None:
+    if not await _ensure_member(message, bot):
+        return
     await message.reply(
-        "I answer questions from this chat's history.\n"
-        "In a group, @mention me or reply to my messages. In DM, just ask.\n"
-        "Commands: /ask <question>, /stats, /chats, /chat"
+        "I answer questions from the group's history.\n"
+        "In the group, @mention me or reply to my messages. In DM, just ask.\n"
+        "Commands: /ask <question>, /stats"
         "\nAdmins: /reindex (recent), /reindex full, /resolve (fix member names)"
     )
 
 
 @dp.message(Command("ask"))
 async def cmd_ask(message: Message, command, bot: Bot) -> None:
-    if message.chat.type == ChatType.PRIVATE:
-        allowed = await dm_scope(bot, message.from_user.id)
-        if not allowed:
-            await message.reply("You need to be a member of a chat I've indexed to ask me things.")
-            return
-        await respond(message, command.args or "", allowed)
+    if not await _ensure_member(message, bot):
         return
-    await respond(message, command.args or "", message.chat.id)
-
-
-@dp.message(Command("chats"))
-async def cmd_chats(message: Message, bot: Bot) -> None:
-    if message.chat.type != ChatType.PRIVATE:
-        await message.reply("Use /chats in a DM to pick which group I search.")
-        return
-    allowed = await indexed_chats_for_user(bot, message.from_user.id)
-    if not allowed:
-        await message.reply("You need to be a member of a chat I've indexed.")
-        return
-    pref = await _db(db.get_dm_chat, conn, message.from_user.id)
-    lines = []
-    for i, cid in enumerate(allowed, 1):
-        mark = " ←" if cid == pref else ""
-        lines.append(f"{i}. {await _chat_title(bot, cid)} (`{cid}`){mark}")
-    hint = "All your chats (use /chat N to focus)." if pref not in allowed else "Use /chat all to search every chat."
-    await message.reply("Indexed chats you can ask about:\n" + "\n".join(lines) + "\n\n" + hint)
-
-
-@dp.message(Command("chat"))
-async def cmd_chat(message: Message, command, bot: Bot) -> None:
-    if message.chat.type != ChatType.PRIVATE:
-        await message.reply("Use /chat in a DM.")
-        return
-    allowed = await indexed_chats_for_user(bot, message.from_user.id)
-    if not allowed:
-        await message.reply("You need to be a member of a chat I've indexed.")
-        return
-    arg = (command.args or "").strip()
-    if not arg:
-        await message.reply("Pick a number from /chats, a chat id, or /chat all.")
-        return
-    if arg.lower() in ("all", "any", "*"):
-        await _db(db.set_dm_chat, conn, message.from_user.id, None)
-        await message.reply("I'll search all your indexed chats.")
-        return
-    chosen = None
-    if arg.lstrip("-").isdigit():
-        n = int(arg)
-        if 1 <= n <= len(allowed):
-            chosen = allowed[n - 1]
-        elif n in allowed:
-            chosen = n
-    if chosen is None:
-        await message.reply("Pick a number from /chats, a chat id, or /chat all.")
-        return
-    await _db(db.set_dm_chat, conn, message.from_user.id, chosen)
-    await message.reply(f"Searching {await _chat_title(bot, chosen)}.")
+    await respond(message, command.args or "", _configured_chat())
 
 
 @dp.message(Command("stats"))
-async def cmd_stats(message: Message) -> None:
+async def cmd_stats(message: Message, bot: Bot) -> None:
+    if not await _ensure_member(message, bot):
+        return
     s = await _db(db.stats, conn)
     await message.reply(
         f"messages: {s['messages']}\nwindows: {s['windows']}\n"
@@ -336,17 +265,20 @@ async def cmd_stats(message: Message) -> None:
 
 
 @dp.message(Command("reindex"))
-async def cmd_reindex(message: Message, command) -> None:
+async def cmd_reindex(message: Message, command, bot: Bot) -> None:
+    if not await _ensure_member(message, bot):
+        return
     if message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply("Admins only.")
         return
+    chat_id = _configured_chat()
     full = (command.args or "").strip().lower() == "full"
     if full:
         await message.reply("Full reindex…")
-        result = await index_chats(None, full=True)
+        result = await index_chats(chat_id, full=True)
     else:
         await message.reply("Updating recent history…")
-        result = await index_chats(None, lookback=config.UPDATE_LOOKBACK_DAYS)
+        result = await index_chats(chat_id, lookback=config.UPDATE_LOOKBACK_DAYS)
     await message.reply(f"Done: {result['windows']} windows across {result['chats']} chat(s).")
 
 
@@ -354,22 +286,22 @@ async def cmd_reindex(message: Message, command) -> None:
 async def cmd_resolve(message: Message, bot: Bot) -> None:
     """Look up members' real names via the Bot API, replacing export labels.
 
-    Run inside the group whose members you want to resolve. Only people still in
-    the group can be looked up; anyone who left keeps their export label.
+    Only people still in the configured group can be looked up; anyone who left
+    keeps their export label.
     """
+    if not await _ensure_member(message, bot):
+        return
     if message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply("Admins only.")
         return
-    if message.chat.type == ChatType.PRIVATE:
-        await message.reply("Run /resolve inside the group whose members to resolve.")
-        return
+    chat_id = _configured_chat()
 
     ids = await _db(
         lambda: [
             r[0]
             for r in conn.execute(
                 "SELECT DISTINCT sender_id FROM messages WHERE chat_id=? AND sender_id IS NOT NULL",
-                (message.chat.id,),
+                (chat_id,),
             )
         ]
     )
@@ -378,7 +310,7 @@ async def cmd_resolve(message: Message, bot: Bot) -> None:
     done = 0
     for uid in ids:
         try:
-            member = await bot.get_chat_member(message.chat.id, uid)
+            member = await bot.get_chat_member(chat_id, uid)
             await _db(_record_person, uid, member.user.full_name, member.user.username, "api")
             done += 1
         except Exception:
@@ -432,6 +364,8 @@ async def _ingest_group_message(message: Message, *, edited: bool = False) -> No
 
 @dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def on_group_message(message: Message, bot: Bot) -> None:
+    if not _is_configured_chat(message.chat.id):
+        return
     text = message.text or message.caption
     if not text:
         return
@@ -441,11 +375,13 @@ async def on_group_message(message: Message, bot: Bot) -> None:
     if await _mentions_bot(message, bot):
         me = await bot.me()
         question = text.replace(f"@{me.username}", "").strip()
-        await respond(message, question, message.chat.id)
+        await respond(message, question, _configured_chat())
 
 
 @dp.edited_message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def on_group_edit(message: Message) -> None:
+    if not _is_configured_chat(message.chat.id):
+        return
     await _ingest_group_message(message, edited=True)
 
 
@@ -455,11 +391,9 @@ async def on_group_edit(message: Message) -> None:
 async def on_private_message(message: Message, bot: Bot) -> None:
     if not message.text:
         return
-    allowed = await dm_scope(bot, message.from_user.id)
-    if not allowed:
-        await message.reply("You need to be a member of a chat I've indexed to ask me things.")
+    if not await _ensure_member(message, bot):
         return
-    await respond(message, message.text, allowed)
+    await respond(message, message.text, _configured_chat())
 
 
 async def _notify_admins(bot: Bot, text: str) -> None:
@@ -474,12 +408,24 @@ async def _notify_admins(bot: Bot, text: str) -> None:
 
 
 async def _on_startup(bot: Bot) -> None:
-    log.info("bot is up")
+    s = db.stats(conn)
+    log.info("bot is up; database %s: %s", config.DB_PATH, s)
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(logconfig.asyncio_handler)
-    await _align_export_chat_ids(bot)
+    await _align_export_chat_ids()
+    try:
+        chat = await bot.get_chat(_configured_chat())
+        title = chat.title or str(_configured_chat())
+    except Exception:
+        title = str(_configured_chat())
+        log.warning("cannot reach TELEGRAM_CHAT_ID=%s", _configured_chat())
+    log.info("configured chat %s (%s)", _configured_chat(), title)
     _admin_errors.attach(loop, lambda text: _notify_admins(bot, text))
-    await _notify_admins(bot, "Bot is up")
+    await _notify_admins(
+        bot,
+        f"Bot is up\n{config.DB_PATH}: {s['messages']} messages, {s['windows']} windows"
+        f"\nchat: {title} (`{_configured_chat()}`)",
+    )
 
 
 async def _on_shutdown(bot: Bot) -> None:
@@ -495,6 +441,8 @@ dp.shutdown.register(_on_shutdown)
 async def main() -> None:
     if not config.TELEGRAM_BOT_TOKEN:
         raise SystemExit("set TELEGRAM_BOT_TOKEN (see .env.example)")
+    if config.TELEGRAM_CHAT_ID is None:
+        raise SystemExit("set TELEGRAM_CHAT_ID (the supergroup's Bot API id, see .env.example)")
     bot = Bot(config.TELEGRAM_BOT_TOKEN)
     log.info("starting polling")
     asyncio.create_task(_periodic_lookback())
