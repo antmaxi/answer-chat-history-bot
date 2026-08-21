@@ -180,10 +180,111 @@ DB_PATH=/tmp/demo.db python -m answerbot.search "why was the morning meeting mov
 
 ## Configuration
 
-All optional, via environment or a `.env` file — see [answerbot/config.py](answerbot/config.py).
-The ones worth knowing: `DB_PATH`, `LOG_LEVEL`, `LOG_PATH`, `EMBED_MODEL`, `WINDOW_GAP_SECONDS`, `TOP_K`,
-`ANSWER_COOLDOWN_SECONDS`, `LIVE_LOOKBACK_HOURS`. Logs go to stderr and a rotating
-`answerbot.log` next to the database (`LOG_PATH=off` for stderr only).
+All optional, via environment or a `.env` file. Copy [`.env.example`](.env.example)
+and fill in the keys you need. Values are read once at startup from
+[answerbot/config.py](answerbot/config.py).
+
+### Paths and logs
+
+- **`DB_PATH`** (`answerbot.db`) — SQLite file for messages, windows, and
+  embeddings. In Docker this is `/data/answerbot.db`.
+- **`LOG_LEVEL`** (`INFO`) — logging threshold (`DEBUG`, `INFO`, `WARNING`,
+  `ERROR`).
+- **`LOG_PATH`** — rotating file next to the database (`answerbot.log` by
+  default). Logs also go to stderr. Set to `off` (or `0` / `false` / `none`)
+  for stderr only; any other path writes there instead.
+
+### Embeddings
+
+Local, no API key. A full `index` is required after changing these.
+
+- **`EMBED_MODEL`** (`intfloat/multilingual-e5-small`) — sentence-transformers
+  model used to embed windows and queries.
+- **`EMBED_DIM`** (`384`) — vector width stored in SQLite. Must match the
+  model; wrong values make search silently useless.
+
+### Windowing
+
+Consecutive messages are grouped into conversation windows (the retrieval
+unit). A new window starts when the time gap is too large, or the current
+window hits a size cap. Reply chains stay together regardless of the gap.
+Change these, then run a full `index`.
+
+- **`WINDOW_GAP_SECONDS`** (`1800`) — idle gap that starts a new window
+  (30 minutes).
+- **`WINDOW_MAX_MSGS`** (`25`) — maximum messages in one window.
+- **`WINDOW_MAX_CHARS`** (`1500`) — maximum characters in one window.
+- **`WINDOW_OVERLAP`** (`2`) — messages copied onto the next window so an
+  answer is not cut in half at the boundary.
+- **`UPDATE_LOOKBACK_DAYS`** (`14`) — on `index --update` (and the bot's
+  periodic live lookback), how far back to re-window on top of the open tail,
+  so recent *edits* are picked up. `0` is tail-only.
+
+### Speaker names
+
+- **`SPEAKER_LABEL`** (`name`) — `name` uses the resolved real name, falling
+  back to the export label. `id` renders stable anonymous `User N` aliases
+  instead (see [Or drop names entirely](#or-drop-names-entirely)). Names live
+  in window text, so a reindex is required after changing this.
+
+### Retrieval
+
+Hybrid keyword (FTS5) + vector search, merged with reciprocal rank fusion.
+
+- **`TOP_K`** (`8`) — windows passed to the LLM as excerpts.
+- **`RRF_K`** (`20`) — RRF smoothing; lower keeps the top ranks more
+  separated (the usual paper default is 60, which is meant for much longer
+  result lists).
+- **`WEIGHT_VECTOR`** (`1.0`) / **`WEIGHT_KEYWORD`** (`0.7`) — relative
+  weight of each list in the fusion. Keyword is slightly down-weighted so
+  embedding similarity leads.
+- **`STOPWORD_DF_RATIO`** (`0.25`) — query terms that appear in more than
+  this fraction of messages are dropped from the keyword query (chat filler
+  like "yeah" / "ok").
+
+### Answering
+
+Answer generation is the only cloud LLM call. See
+[Switching the answer model](#switching-the-answer-model) for provider
+setup.
+
+- **`LLM_PROVIDER`** (`claude`) — `claude`, `gemini`, `groq`, `openrouter`,
+  or `ollama`.
+- **`ANTHROPIC_API_KEY`**, **`GEMINI_API_KEY`** (or **`GOOGLE_API_KEY`**),
+  **`GROQ_API_KEY`**, **`OPENROUTER_API_KEY`** — key for the chosen
+  provider. Unused keys can be left empty.
+- **`OPENROUTER_HTTP_REFERER`** / **`OPENROUTER_APP_TITLE`** (`answer-bot`)
+  — optional OpenRouter attribution headers. Referer is omitted unless set.
+- **`ANSWER_MODEL`** — model id. Defaults: Claude `claude-sonnet-5`, Gemini
+  `gemini-2.5-flash`, Groq `openai/gpt-oss-20b`, OpenRouter
+  `openai/gpt-oss-20b:free`. Required for Ollama (whatever you have pulled).
+- **`ANSWER_MAX_TOKENS`** (`8192`) — Groq/OpenRouter completion budget. On
+  reasoning models this covers *thinking plus* the visible answer; 1024 is
+  often not enough and comes back as an empty reply.
+- **`ANSWER_COOLDOWN_SECONDS`** (`8`) — per-user wait between answers in
+  the same chat. `0` disables. Admins skip the cooldown.
+- **`QUERY_LOG`** (`1`) — persist each question and the retrieved window ids
+  locally. `0` / `false` / `off` turns it off.
+- **`LLM_TIMEOUT`** (`60`) — seconds to wait for the provider.
+- **`OLLAMA_HOST`** (`http://localhost:11434`) — Ollama base URL. From
+  Docker, talking to Ollama on the host is
+  `http://host.docker.internal:11434`.
+
+### Telegram bot
+
+- **`TELEGRAM_BOT_TOKEN`** — from @BotFather. Required to run the bot.
+  Privacy mode must be **off** or the bot sees no group messages.
+- **`ADMIN_USER_IDS`** — numeric Telegram user ids (space- or
+  comma-separated). Those accounts get `Bot is up` / `Bot is down` DMs and
+  ERROR logs with traceback; they can run `/reindex` and skip the answer
+  cooldown. Open a DM with the bot first so it can write to you.
+- **`LIVE_REINDEX_EVERY`** (`20`) — new messages that may accumulate before
+  the open tail is re-windowed.
+- **`LIVE_LOOKBACK_HOURS`** (`6`) — how often to rebuild the last
+  `UPDATE_LOOKBACK_DAYS` of history so recent edits self-heal. `0` disables
+  the periodic pass (tail reindex still runs).
+- **`MEMBERSHIP_CACHE_SECONDS`** (`300`) — how long a "is this user in this
+  chat?" Bot API lookup is remembered, used to decide who may ask in DM.
 
 ## Tests
 
