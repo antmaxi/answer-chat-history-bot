@@ -265,8 +265,10 @@ setup.
   often not enough and comes back as an empty reply.
 - **`ANSWER_MAX_REQUEST_TOKENS`** (`0`) — cap on *prompt plus* completion
   for one request. `0` means no extra cap, except Groq which then uses
-  `8000` to match on_demand TPM (a request that reserves 8192 completion
-  tokens 413s even with a short prompt). Raise this if you are on Dev Tier.
+  `8000` to match on_demand TPM and reserves at most 2048 completion
+  tokens so a second question in the same minute is not a 429. Groq
+  retries a TPM 429 once after the wait it suggests (up to 20s). Raise
+  `ANSWER_MAX_REQUEST_TOKENS` if you are on Dev Tier.
 - **`ANSWER_COOLDOWN_SECONDS`** (`8`) — per-user wait between answers in
   the same chat. `0` disables. Admins skip the cooldown.
 - **`QUERY_LOG`** (`1`) — persist each question and the retrieved window ids

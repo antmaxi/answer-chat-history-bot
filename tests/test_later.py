@@ -372,7 +372,8 @@ class TestOpenAICompat:
             monkeypatch,
         )
         prompt = _estimate_tokens("sys") + _estimate_tokens("usr") + _CHAT_OVERHEAD_TOKENS
-        assert cap["payload"]["max_tokens"] + prompt == 8000
+        assert cap["payload"]["max_tokens"] == 2048
+        assert cap["payload"]["max_tokens"] + prompt < 8000
         assert cap["payload"]["max_tokens"] < 8192
 
     def test_groq_prompt_over_budget_raises(self, monkeypatch):
@@ -469,6 +470,70 @@ class TestOpenAICompat:
 
         monkeypatch.setattr(llm_mod, "_http_open", boom)
         with pytest.raises(RuntimeError, match="Groq HTTP 429: rate"):
+            GroqLLM(api_key="k", model="x").complete("s", "u")
+
+    def test_groq_retries_429_after_suggested_wait(self, monkeypatch):
+        from email.message import Message
+        from io import BytesIO
+
+        from answerbot import llm as llm_mod
+        from answerbot.llm import GroqLLM
+
+        calls = {"n": 0}
+        slept = []
+
+        class FakeResp:
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_open(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise urllib.error.HTTPError(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    429,
+                    "Too Many Requests",
+                    hdrs=Message(),
+                    fp=BytesIO(
+                        b'{"error":{"message":"Rate limit reached. Please try again in 7.85s."}}'
+                    ),
+                )
+            return FakeResp()
+
+        monkeypatch.setattr(llm_mod, "_http_open", fake_open)
+        monkeypatch.setattr(llm_mod.time, "sleep", slept.append)
+        assert GroqLLM(api_key="k", model="x").complete("s", "u") == "ok"
+        assert calls["n"] == 2
+        assert len(slept) == 1
+        assert slept[0] == pytest.approx(8.1, abs=0.05)
+
+    def test_groq_does_not_retry_long_429_wait(self, monkeypatch):
+        from email.message import Message
+        from io import BytesIO
+
+        from answerbot import llm as llm_mod
+        from answerbot.llm import GroqLLM
+
+        def boom(*a, **k):
+            raise urllib.error.HTTPError(
+                "https://api.groq.com/openai/v1/chat/completions",
+                429,
+                "Too Many Requests",
+                hdrs=Message(),
+                fp=BytesIO(
+                    b'{"error":{"message":"Rate limit reached. Please try again in 45s."}}'
+                ),
+            )
+
+        monkeypatch.setattr(llm_mod, "_http_open", boom)
+        monkeypatch.setattr(llm_mod.time, "sleep", lambda s: pytest.fail("slept"))
+        with pytest.raises(RuntimeError, match="Groq HTTP 429:"):
             GroqLLM(api_key="k", model="x").complete("s", "u")
 
     def test_http_error_does_not_dump_raw_body(self, monkeypatch):

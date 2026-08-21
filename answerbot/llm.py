@@ -5,6 +5,8 @@ switching providers later touches this file and one config key, nothing else.
 """
 
 import json
+import re
+import time
 import urllib.error
 import urllib.request
 from typing import Protocol
@@ -17,11 +19,15 @@ from . import config
 _HTTP_USER_AGENT = "answer-chat-history-bot/0.1.0"
 
 # Groq on_demand TPM for gpt-oss-20b is 8000; each request reserves
-# prompt + max_completion_tokens against it. 8192 completion alone already
-# overshoots, which is a 413 even before excerpts are added.
+# prompt + max_completion_tokens against it. Filling that window on every
+# call 413s a too-large request and 429s the next question a few seconds later.
 _GROQ_DEFAULT_MAX_REQUEST_TOKENS = 8000
+_GROQ_DEFAULT_MAX_COMPLETION_TOKENS = 2048
 _MIN_COMPLETION_TOKENS = 256
 _CHAT_OVERHEAD_TOKENS = 24
+_MAX_429_RETRIES = 1
+_MAX_429_WAIT_S = 20.0
+_RETRY_AFTER_RE = re.compile(r"try again in (\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -31,6 +37,8 @@ def _estimate_tokens(text: str) -> int:
 
 def _completion_tokens(system: str, user: str, wanted: int, cap: int) -> int:
     """Shrink completion so prompt + completion stay under cap. cap 0 = no shrink."""
+    if 0 < cap <= _GROQ_DEFAULT_MAX_REQUEST_TOKENS:
+        wanted = min(wanted, _GROQ_DEFAULT_MAX_COMPLETION_TOKENS)
     if cap <= 0:
         return wanted
     prompt = _estimate_tokens(system) + _estimate_tokens(user) + _CHAT_OVERHEAD_TOKENS
@@ -41,6 +49,17 @@ def _completion_tokens(system: str, user: str, wanted: int, cap: int) -> int:
             f"(~{prompt} tokens, limit {cap})"
         )
     return min(wanted, room)
+
+
+def _retry_wait_s(detail: str) -> float | None:
+    """Seconds Groq asked us to wait, or None if we should not retry."""
+    m = _RETRY_AFTER_RE.search(detail)
+    if not m:
+        return None
+    wait = float(m.group(1)) + 0.25
+    if wait > _MAX_429_WAIT_S:
+        return None
+    return wait
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -189,12 +208,21 @@ class OpenAICompatLLM:
         }
         url = f"{self.base_url}/chat/completions"
         req = urllib.request.Request(url, data=payload, headers=headers)
+        retries = 0
         try:
-            with _http_open(req, timeout=config.LLM_TIMEOUT) as resp:
-                body = json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            detail = _openai_api_error_text(e.read(), e.reason)
-            raise RuntimeError(f"{self.label} HTTP {e.code}: {detail}") from e
+            while True:
+                try:
+                    with _http_open(req, timeout=config.LLM_TIMEOUT) as resp:
+                        body = json.loads(resp.read())
+                    break
+                except urllib.error.HTTPError as e:
+                    detail = _openai_api_error_text(e.read(), e.reason)
+                    wait = _retry_wait_s(detail) if e.code == 429 else None
+                    if wait is not None and retries < _MAX_429_RETRIES:
+                        retries += 1
+                        time.sleep(wait)
+                        continue
+                    raise RuntimeError(f"{self.label} HTTP {e.code}: {detail}") from e
         except urllib.error.URLError as e:
             raise RuntimeError(f"{self.label} at {self.base_url} failed: {e}") from e
         except TimeoutError as e:
