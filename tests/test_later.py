@@ -180,6 +180,22 @@ class TestSchemaMigrate:
         assert "query_log" in tables
         assert "aliases" in tables
 
+    def test_stats_includes_message_span(self, conn):
+        empty = db.stats(conn)
+        assert empty["messages"] == 0
+        assert empty["first_message"] is None
+        assert empty["last_message"] is None
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 1, 1700000000, 'A', 'old')"
+        )
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 2, 1700003600, 'A', 'new')"
+        )
+        s = db.stats(conn)
+        assert s["messages"] == 2
+        assert s["first_message"] == "2023-11-14 22:13 UTC"
+        assert s["last_message"] == "2023-11-14 23:13 UTC"
+
 
 class TestChatIdAlign:
     def test_remap_moves_messages_and_windows(self, conn):

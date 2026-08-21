@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
@@ -149,16 +150,25 @@ def migrate(conn: sqlite3.Connection) -> None:
     return
 
 
+def _iso_utc(ts: int | None) -> str | None:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
 def stats(conn: sqlite3.Connection) -> dict:
-    """Row counts, for the CLI and the bot's /stats command."""
+    """Row counts and the indexed message span, for the CLI and /stats."""
     def count(table: str) -> int:
         return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
+    first_ts, last_ts = conn.execute("SELECT MIN(ts), MAX(ts) FROM messages").fetchone()
     return {
         "messages": count("messages"),
         "windows": count("windows"),
         "embedded": count("window_vecs"),
         "chats": count("(SELECT DISTINCT chat_id FROM messages)"),
+        "first_message": _iso_utc(first_ts),
+        "last_message": _iso_utc(last_ts),
     }
 
 

@@ -106,6 +106,13 @@ def _configured_chat() -> int:
     return chat_id
 
 
+def _span_lines(s: dict) -> str:
+    first, last = s.get("first_message"), s.get("last_message")
+    if not first or not last:
+        return ""
+    return f"\nfirst: {first}\nlast: {last}"
+
+
 def _is_configured_chat(chat_id: int) -> bool:
     return chat_id == _configured_chat()
 
@@ -261,6 +268,7 @@ async def cmd_stats(message: Message, bot: Bot) -> None:
     await message.reply(
         f"messages: {s['messages']}\nwindows: {s['windows']}\n"
         f"embedded: {s['embedded']}\nchats: {s['chats']}"
+        f"{_span_lines(s)}"
     )
 
 
@@ -424,6 +432,7 @@ async def _on_startup(bot: Bot) -> None:
     await _notify_admins(
         bot,
         f"Bot is up\n{config.DB_PATH}: {s['messages']} messages, {s['windows']} windows"
+        f"{_span_lines(s)}"
         f"\nchat: {title} (`{_configured_chat()}`)",
     )
 
