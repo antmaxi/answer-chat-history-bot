@@ -1,0 +1,75 @@
+"""About-the-bot text for /info: last git commit (or file mtime) and source URL."""
+
+from __future__ import annotations
+
+import html
+import logging
+import os
+import subprocess
+from datetime import UTC, datetime
+from pathlib import Path
+
+from . import config, i18n
+
+log = logging.getLogger("answerbot")
+
+
+def fmt_dt_utc(dt: datetime) -> str:
+    """Format a datetime in the configured display timezone (default UTC+2).
+
+    Naive datetimes are treated as UTC instants. Aware datetimes are converted
+    to the display zone. The label uses UTC±HH:MM for the display offset.
+    """
+    tz = config.display_timezone()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    local = dt.astimezone(tz)
+    off = local.strftime("%z")
+    return local.strftime("%Y-%m-%d %H:%M:%S") + f" UTC{off[:3]}:{off[3:5]}"
+
+
+def _git_root() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / ".git").exists():
+            return parent
+    if Path(".git").exists():
+        return Path(".")
+    return None
+
+
+def last_update() -> str:
+    """Last git commit time, or this file's mtime if git is unavailable."""
+    root = _git_root()
+    if root is not None:
+        try:
+            ct = (
+                subprocess.check_output(
+                    ["git", "log", "-1", "--format=%ct"],
+                    cwd=root,
+                    stderr=subprocess.DEVNULL,
+                )
+                .decode("utf-8")
+                .strip()
+            )
+            return fmt_dt_utc(datetime.fromtimestamp(int(ct), tz=UTC))
+        except Exception:
+            log.warning("Could not get last commit via git", exc_info=True)
+    try:
+        mtime = os.path.getmtime(__file__)
+        return fmt_dt_utc(datetime.fromtimestamp(mtime, tz=UTC))
+    except Exception:
+        log.warning("Could not get file mtime", exc_info=True)
+        return "unknown"
+
+
+def format_info(updated: str, lang: str | None = None) -> str:
+    lang = i18n.normalize_lang(lang)
+    if updated == "unknown":
+        updated = i18n.t(lang, "unknown")
+    return i18n.t(
+        lang,
+        "info_msg",
+        bot_name=i18n.t(lang, "bot_name"),
+        last_commit=html.escape(updated),
+        github_repo=html.escape(config.GITHUB_REPO),
+    )

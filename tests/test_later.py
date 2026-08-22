@@ -177,11 +177,28 @@ class TestSchemaMigrate:
         db.set_dm_chat(conn, 7, None)
         assert db.get_dm_chat(conn, 7) is None
 
+    def test_user_lang_defaults_to_russian(self, conn):
+        assert db.get_user_lang(conn, 7) == "ru"
+
+    def test_user_lang_roundtrip(self, conn):
+        assert db.set_user_lang(conn, 7, "en") == "en"
+        assert db.get_user_lang(conn, 7) == "en"
+        assert db.set_user_lang(conn, 7, "ru") == "ru"
+        assert db.get_user_lang(conn, 7) == "ru"
+
+    def test_user_lang_unknown_falls_back(self, conn):
+        conn.execute("INSERT INTO user_prefs (user_id, lang) VALUES (7, 'de')")
+        conn.commit()
+        assert db.get_user_lang(conn, 7) == "ru"
+        assert db.set_user_lang(conn, 7, "de") == "ru"
+        assert db.get_user_lang(conn, 7) == "ru"
+
     def test_connect_creates_later_tables(self, conn):
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "dm_prefs" in tables
         assert "query_log" in tables
         assert "aliases" in tables
+        assert "user_prefs" in tables
 
     def test_stats_includes_message_span(self, conn):
         empty = db.stats(conn)

@@ -1,6 +1,7 @@
 """Configuration, read once from the environment / .env file."""
 
 import os
+from datetime import timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -93,6 +94,9 @@ MEMBERSHIP_CACHE_SECONDS = float(os.getenv("MEMBERSHIP_CACHE_SECONDS", "300"))
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GITHUB_REPO = os.getenv(
+    "GITHUB_REPO", "https://github.com/antmaxi/answer-chat-history-bot"
+).strip() or "https://github.com/antmaxi/answer-chat-history-bot"
 
 
 def parse_telegram_chat_id(raw: str | None) -> int | None:
@@ -111,3 +115,22 @@ ADMIN_USER_IDS = {
 }
 # How many new messages may accumulate before the tail is re-windowed.
 LIVE_REINDEX_EVERY = int(os.getenv("LIVE_REINDEX_EVERY", "20"))
+
+
+def _display_utc_offset_hours() -> int:
+    raw = os.getenv("DISPLAY_UTC_OFFSET_HOURS", "2").strip()
+    try:
+        hours = int(raw)
+    except ValueError:
+        return 2
+    if hours < -12 or hours > 14:
+        return 2
+    return hours
+
+
+# Wall-clock times in bot messages (e.g. /info) use this UTC offset.
+DISPLAY_UTC_OFFSET_HOURS = _display_utc_offset_hours()
+
+
+def display_timezone() -> timezone:
+    return timezone(timedelta(hours=DISPLAY_UTC_OFFSET_HOURS))

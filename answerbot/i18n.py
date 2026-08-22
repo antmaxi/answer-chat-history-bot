@@ -1,0 +1,165 @@
+"""User-facing strings. Default UI language is Russian; /settings toggles EN."""
+
+from __future__ import annotations
+
+DEFAULT_LANG = "ru"
+SUPPORTED_LANGS: tuple[str, ...] = ("ru", "en")
+LANG_NATIVE_NAME: dict[str, str] = {
+    "ru": "Русский",
+    "en": "English",
+}
+ADMIN_COMMANDS = frozenset({"reindex", "resolve"})
+
+COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
+    "ru": [
+        ("ask", "Задать вопрос"),
+        ("stats", "Размер индекса"),
+        ("settings", "⚙️ Настройки"),
+        ("reindex", "Обновить индекс"),
+        ("resolve", "Имена участников"),
+        ("help", "Как пользоваться ботом"),
+        ("info", "ℹ️ О боте"),
+    ],
+    "en": [
+        ("ask", "Ask a question"),
+        ("stats", "Index size"),
+        ("settings", "⚙️ Settings"),
+        ("reindex", "Rebuild recent index"),
+        ("resolve", "Fix member names"),
+        ("help", "How to use the bot"),
+        ("info", "ℹ️ About the bot"),
+    ],
+}
+
+T: dict[str, dict[str, str]] = {
+    "en": {
+        "not_member": "You're not a member of the group this bot serves.",
+        "help": (
+            "I answer questions from the group's history.\n"
+            "In the group, @mention me or reply to my messages. In DM, just ask.\n"
+            "Commands: /ask <question>, /stats, /info, /settings"
+        ),
+        "help_admin": (
+            "\nAdmins: /reindex (recent), /reindex full, /resolve (fix member names)"
+        ),
+        "ask_empty": "Ask me a question about this chat's history.",
+        "cooldown": "Wait {wait} before asking again.",
+        "quota_user": "Hourly limit reached. Try again in {wait}.",
+        "quota_global": "The bot's hourly limit is reached. Try again in {wait}.",
+        "wait_seconds": "{n}s",
+        "wait_minutes": "{n} min",
+        "answer_failed": "Something went wrong answering that.",
+        "go_to_first": "Go to the first message",
+        "sources": "Sources",
+        "admins_only": "Admins only.",
+        "reindex_full": "Full reindex…",
+        "reindex_recent": "Updating recent history…",
+        "reindex_done": "Done: {windows} windows across {chats} chat(s).",
+        "resolve_start": "Resolving {n} people via the API — this can take a while…",
+        "resolve_done": (
+            "Resolved {done}/{total} names. Run /reindex to rewrite history with them."
+        ),
+        "stats": (
+            "messages: {messages}\nwindows: {windows}\n"
+            "embedded: {embedded}\nchats: {chats}"
+        ),
+        "stats_span": "\nfirst: {first}\nlast: {last}",
+        "bot_up": (
+            "Bot is up\n{db}: {messages} messages, {windows} windows{span}\n"
+            "chat: {title} (`{chat_id}`)"
+        ),
+        "bot_down": "Bot is down",
+        "settings_title": "⚙️ <b>Settings</b>",
+        "settings_lang_label": "Language:",
+        "settings_lang_btn": "🌐 {next_lang_label}",
+        "lang_set": "🇬🇧 Language set to English.",
+        "bot_name": "Chat History Bot",
+        "info_msg": (
+            "🤖 <b>{bot_name}</b>\n\n"
+            "📅 <b>Last update:</b> {last_commit}\n"
+            "🔗 <b>Source code:</b> {github_repo}\n\n"
+            "💬 Feel free to contact @antmaxi for suggestions on what to improve "
+            "or if you run into issues with the bot."
+        ),
+        "unknown": "unknown",
+    },
+    "ru": {
+        "not_member": "Вы не состоите в группе, которую обслуживает этот бот.",
+        "help": (
+            "Я отвечаю на вопросы по истории группы.\n"
+            "В группе упомяните меня или ответьте на моё сообщение. В личке просто спросите.\n"
+            "Команды: /ask <вопрос>, /stats, /info, /settings"
+        ),
+        "help_admin": (
+            "\nАдминам: /reindex (недавнее), /reindex full, /resolve (имена участников)"
+        ),
+        "ask_empty": "Задайте вопрос об истории этого чата.",
+        "cooldown": "Подождите {wait}, прежде чем спросить снова.",
+        "quota_user": "Часовой лимит исчерпан. Попробуйте снова через {wait}.",
+        "quota_global": "Часовой лимит бота исчерпан. Попробуйте снова через {wait}.",
+        "wait_seconds": "{n} с",
+        "wait_minutes": "{n} мин",
+        "answer_failed": "Не получилось ответить на этот вопрос.",
+        "go_to_first": "К первому сообщению",
+        "sources": "Источники",
+        "admins_only": "Только для админов.",
+        "reindex_full": "Полная переиндексация…",
+        "reindex_recent": "Обновляю недавнюю историю…",
+        "reindex_done": "Готово: {windows} окон в {chats} чат(ах).",
+        "resolve_start": "Уточняю {n} человек через API — это может занять время…",
+        "resolve_done": (
+            "Обновлены имена {done}/{total}. Запустите /reindex, чтобы переписать историю."
+        ),
+        "stats": (
+            "сообщений: {messages}\nокон: {windows}\n"
+            "с эмбеддингами: {embedded}\nчатов: {chats}"
+        ),
+        "stats_span": "\nпервое: {first}\nпоследнее: {last}",
+        "bot_up": (
+            "Бот запущен\n{db}: {messages} сообщений, {windows} окон{span}\n"
+            "чат: {title} (`{chat_id}`)"
+        ),
+        "bot_down": "Бот остановлен",
+        "settings_title": "⚙️ <b>Настройки</b>",
+        "settings_lang_label": "Язык:",
+        "settings_lang_btn": "🌐 {next_lang_label}",
+        "lang_set": "🇷🇺 Язык установлен: Русский.",
+        "bot_name": "Бот истории чата",
+        "info_msg": (
+            "🤖 <b>{bot_name}</b>\n\n"
+            "📅 <b>Последнее обновление:</b> {last_commit}\n"
+            "🔗 <b>Исходный код:</b> {github_repo}\n\n"
+            "💬 Пишите @antmaxi с предложениями по улучшению бота или если что-то "
+            "не работает."
+        ),
+        "unknown": "неизвестно",
+    },
+}
+
+
+def normalize_lang(lang: str | None) -> str:
+    if lang in T:
+        return lang
+    return DEFAULT_LANG
+
+
+def next_ui_lang(current: str) -> str:
+    current = normalize_lang(current)
+    idx = SUPPORTED_LANGS.index(current)
+    return SUPPORTED_LANGS[(idx + 1) % len(SUPPORTED_LANGS)]
+
+
+def t(lang: str | None, key: str, **kwargs: object) -> str:
+    lang = normalize_lang(lang)
+    text = T[lang][key]
+    if kwargs:
+        return text.format(**kwargs)
+    return text
+
+
+def settings_text(lang: str) -> str:
+    lang = normalize_lang(lang)
+    return (
+        f"{t(lang, 'settings_title')}\n\n"
+        f"{t(lang, 'settings_lang_label')} {LANG_NATIVE_NAME[lang]}"
+    )

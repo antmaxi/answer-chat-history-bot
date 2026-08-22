@@ -20,9 +20,19 @@ from aiogram import Bot, Dispatcher, F, html
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeChatMember,
+    BotCommandScopeDefault,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-from . import adminlog, answer, config, cooldown, db, embed, followup, index, logconfig, membership, people, retrieve
+from . import adminlog, answer, config, cooldown, db, embed, followup, i18n, index, logconfig, membership, people, retrieve
+from .info import format_info, last_update
 from .ingest import live
 from .ingest.export import desktop_ids_for
 
@@ -43,6 +53,7 @@ _global_quota = cooldown.Quota(config.ANSWER_MAX_PER_HOUR)
 _members = membership.MembershipCache(config.MEMBERSHIP_CACHE_SECONDS)
 _history: dict[tuple[int, int], deque[str]] = defaultdict(lambda: deque(maxlen=4))
 _admin_errors = adminlog.AdminErrorHandler()
+_lang_cache: dict[int, str] = {}
 
 
 async def _db(fn, *args):
@@ -108,11 +119,11 @@ def _configured_chat() -> int:
     return chat_id
 
 
-def _span_lines(s: dict) -> str:
+def _span_lines(s: dict, lang: str) -> str:
     first, last = s.get("first_message"), s.get("last_message")
     if not first or not last:
         return ""
-    return f"\nfirst: {first}\nlast: {last}"
+    return i18n.t(lang, "stats_span", first=first, last=last)
 
 
 def _is_configured_chat(chat_id: int) -> bool:
@@ -134,7 +145,62 @@ async def _user_in_configured_chat(bot: Bot, user_id: int) -> bool:
     return ok
 
 
-_DECLINE = "You're not a member of the group this bot serves."
+async def _lang_for(user_id: int | None) -> str:
+    if not user_id:
+        return i18n.DEFAULT_LANG
+    cached = _lang_cache.get(user_id)
+    if cached is not None:
+        return cached
+    lang = await _db(db.get_user_lang, conn, user_id)
+    _lang_cache[user_id] = lang
+    return lang
+
+
+async def _set_lang(user_id: int, lang: str) -> str:
+    lang = await _db(db.set_user_lang, conn, user_id, lang)
+    _lang_cache[user_id] = lang
+    return lang
+
+
+def commands_for_user(lang: str, user_id: int) -> list[BotCommand]:
+    lang = i18n.normalize_lang(lang)
+    cmds = [BotCommand(command=name, description=desc) for name, desc in i18n.COMMAND_SPECS[lang]]
+    if user_id not in config.ADMIN_USER_IDS:
+        cmds = [c for c in cmds if c.command not in i18n.ADMIN_COMMANDS]
+    return cmds
+
+
+def _settings_keyboard(lang: str) -> InlineKeyboardMarkup:
+    next_label = i18n.LANG_NATIVE_NAME[i18n.next_ui_lang(lang)]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=i18n.t(lang, "settings_lang_btn", next_lang_label=next_label),
+                    callback_data="settings:toggle_lang",
+                )
+            ]
+        ]
+    )
+
+
+async def set_user_commands(bot: Bot, chat, user) -> None:
+    """Push the command menu for this user in their saved language."""
+    if chat is None or user is None:
+        return
+    lang = await _lang_for(user.id)
+    menu = commands_for_user(lang, user.id)
+    try:
+        if chat.type == ChatType.PRIVATE:
+            scope: BotCommandScopeChat | BotCommandScopeChatMember = BotCommandScopeChat(
+                chat_id=chat.id
+            )
+        else:
+            scope = BotCommandScopeChatMember(chat_id=chat.id, user_id=user.id)
+        await bot.delete_my_commands(scope=scope)
+        await bot.set_my_commands(menu, scope=scope)
+    except Exception:
+        log.warning("Could not set commands for user %s", user.id, exc_info=True)
 
 
 async def _ensure_member(message: Message, bot: Bot) -> bool:
@@ -146,11 +212,26 @@ async def _ensure_member(message: Message, bot: Bot) -> bool:
         return _is_configured_chat(message.chat.id)
     if await _user_in_configured_chat(bot, user.id):
         return True
-    await message.reply(_DECLINE)
+    lang = await _lang_for(user.id)
+    await message.reply(i18n.t(lang, "not_member"))
     return False
 
 
-def format_answer(result: answer.Answer) -> str:
+async def _ensure_member_callback(query: CallbackQuery, bot: Bot) -> bool:
+    user = query.from_user
+    if user is None:
+        return False
+    chat = query.message.chat if query.message else None
+    if chat is not None and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return _is_configured_chat(chat.id)
+    if await _user_in_configured_chat(bot, user.id):
+        return True
+    lang = await _lang_for(user.id)
+    await query.answer(i18n.t(lang, "not_member"), show_alert=True)
+    return False
+
+
+def format_answer(result: answer.Answer, lang: str) -> str:
     # Quote first (brackets survive escaping), then turn each [W#] into a link to
     # the relevant messages, so the citations in the answer are clickable.
     body = html.quote(result.text)
@@ -166,7 +247,7 @@ def format_answer(result: answer.Answer) -> str:
     # A direct jump to the first message the answer is grounded in.
     link = result.primary_link()
     if link:
-        body += f'\n\n➡️ <a href="{link}">Go to the first message</a>'
+        body += f'\n\n➡️ <a href="{link}">{i18n.t(lang, "go_to_first")}</a>'
 
     sources = result.all_sources()
     if sources:
@@ -175,7 +256,7 @@ def format_answer(result: answer.Answer) -> str:
             f'{html.quote(h.when())} · {html.quote(h.speakers)}'
             for i, h, was_cited in sources
         )
-        body += "\n\n<b>Sources</b>\n" + lines
+        body += f'\n\n<b>{i18n.t(lang, "sources")}</b>\n' + lines
     return body
 
 
@@ -198,21 +279,21 @@ async def _align_export_chat_ids() -> None:
         _members.invalidate()
 
 
-def _fmt_quota_wait(seconds: float) -> str:
+def _fmt_quota_wait(seconds: float, lang: str) -> str:
     if seconds < 60:
-        return f"{int(seconds) + 1}s"
-    return f"{(int(seconds) + 59) // 60} min"
+        return i18n.t(lang, "wait_seconds", n=int(seconds) + 1)
+    return i18n.t(lang, "wait_minutes", n=(int(seconds) + 59) // 60)
 
 
-def _quota_block(user_id: int) -> str | None:
+def _quota_block(user_id: int, lang: str) -> str | None:
     """If this LLM call would exceed a quota, the reply to send; else consume a slot."""
     exempt = user_id in config.ADMIN_USER_IDS
     wait = _user_quota.remaining((user_id,), exempt=exempt)
     if wait > 0:
-        return f"Hourly limit reached. Try again in {_fmt_quota_wait(wait)}."
+        return i18n.t(lang, "quota_user", wait=_fmt_quota_wait(wait, lang))
     wait = _global_quota.remaining((), exempt=exempt)
     if wait > 0:
-        return f"The bot's hourly limit is reached. Try again in {_fmt_quota_wait(wait)}."
+        return i18n.t(lang, "quota_global", wait=_fmt_quota_wait(wait, lang))
     if not exempt:
         _user_quota.touch((user_id,))
         _global_quota.touch(())
@@ -220,16 +301,19 @@ def _quota_block(user_id: int) -> str | None:
 
 
 async def respond(message: Message, question: str, chat_id: int | list[int]) -> None:
-    if not question.strip():
-        await message.reply("Ask me a question about this chat's history.")
-        return
     user_id = message.from_user.id if message.from_user else 0
+    lang = await _lang_for(user_id)
+    if not question.strip():
+        await message.reply(i18n.t(lang, "ask_empty"))
+        return
     wait = _answers.remaining(
         (user_id, message.chat.id),
         exempt=user_id in config.ADMIN_USER_IDS,
     )
     if wait > 0:
-        await message.reply(f"Wait {int(wait) + 1}s before asking again.")
+        await message.reply(
+            i18n.t(lang, "cooldown", wait=_fmt_quota_wait(wait, lang))
+        )
         return
     _answers.touch((user_id, message.chat.id))
 
@@ -250,7 +334,7 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         await index_chats(chat_id)
         hits = await _db(retrieve.search, conn, search_q, chat_id)
         if hits:
-            blocked = _quota_block(user_id)
+            blocked = _quota_block(user_id, lang)
             if blocked:
                 await thinking.edit_text(blocked)
                 return
@@ -261,10 +345,12 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         result = await asyncio.to_thread(complete)
         await _db(answer._record, conn, question, chat_id, result, t0, None)
         _history[key].append(question)
-        await thinking.edit_text(format_answer(result), parse_mode="HTML", disable_web_page_preview=True)
+        await thinking.edit_text(
+            format_answer(result, lang), parse_mode="HTML", disable_web_page_preview=True
+        )
     except Exception:
         log.exception("failed to answer")
-        await thinking.edit_text("Something went wrong answering that.")
+        await thinking.edit_text(i18n.t(lang, "answer_failed"))
 
 
 # --- Commands -------------------------------------------------------------
@@ -273,12 +359,54 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
 async def cmd_help(message: Message, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
+    await set_user_commands(bot, message.chat, message.from_user)
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
+    text = i18n.t(lang, "help")
+    if message.from_user and message.from_user.id in config.ADMIN_USER_IDS:
+        text += i18n.t(lang, "help_admin")
+    await message.reply(text)
+
+
+@dp.message(Command("info"))
+async def cmd_info(message: Message, bot: Bot) -> None:
+    if not await _ensure_member(message, bot):
+        return
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
     await message.reply(
-        "I answer questions from the group's history.\n"
-        "In the group, @mention me or reply to my messages. In DM, just ask.\n"
-        "Commands: /ask <question>, /stats"
-        "\nAdmins: /reindex (recent), /reindex full, /resolve (fix member names)"
+        format_info(last_update(), lang),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
+
+
+@dp.message(Command("settings"))
+async def cmd_settings(message: Message, bot: Bot) -> None:
+    if not await _ensure_member(message, bot):
+        return
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
+    await message.reply(
+        i18n.settings_text(lang),
+        reply_markup=_settings_keyboard(lang),
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data == "settings:toggle_lang")
+async def settings_toggle_lang(query: CallbackQuery, bot: Bot) -> None:
+    if not await _ensure_member_callback(query, bot):
+        return
+    user = query.from_user
+    current = await _lang_for(user.id)
+    lang = await _set_lang(user.id, i18n.next_ui_lang(current))
+    if isinstance(query.message, Message):
+        await set_user_commands(bot, query.message.chat, user)
+    await query.answer(i18n.t(lang, "lang_set"))
+    if isinstance(query.message, Message):
+        await query.message.edit_text(
+            i18n.settings_text(lang),
+            reply_markup=_settings_keyboard(lang),
+            parse_mode="HTML",
+        )
 
 
 @dp.message(Command("ask"))
@@ -292,11 +420,18 @@ async def cmd_ask(message: Message, command, bot: Bot) -> None:
 async def cmd_stats(message: Message, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
     s = await _db(db.stats, conn)
     await message.reply(
-        f"messages: {s['messages']}\nwindows: {s['windows']}\n"
-        f"embedded: {s['embedded']}\nchats: {s['chats']}"
-        f"{_span_lines(s)}"
+        i18n.t(
+            lang,
+            "stats",
+            messages=s["messages"],
+            windows=s["windows"],
+            embedded=s["embedded"],
+            chats=s["chats"],
+        )
+        + _span_lines(s, lang)
     )
 
 
@@ -304,18 +439,21 @@ async def cmd_stats(message: Message, bot: Bot) -> None:
 async def cmd_reindex(message: Message, command, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
     if message.from_user.id not in config.ADMIN_USER_IDS:
-        await message.reply("Admins only.")
+        await message.reply(i18n.t(lang, "admins_only"))
         return
     chat_id = _configured_chat()
     full = (command.args or "").strip().lower() == "full"
     if full:
-        await message.reply("Full reindex…")
+        await message.reply(i18n.t(lang, "reindex_full"))
         result = await index_chats(chat_id, full=True)
     else:
-        await message.reply("Updating recent history…")
+        await message.reply(i18n.t(lang, "reindex_recent"))
         result = await index_chats(chat_id, lookback=config.UPDATE_LOOKBACK_DAYS)
-    await message.reply(f"Done: {result['windows']} windows across {result['chats']} chat(s).")
+    await message.reply(
+        i18n.t(lang, "reindex_done", windows=result["windows"], chats=result["chats"])
+    )
 
 
 @dp.message(Command("resolve"))
@@ -327,8 +465,9 @@ async def cmd_resolve(message: Message, bot: Bot) -> None:
     """
     if not await _ensure_member(message, bot):
         return
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
     if message.from_user.id not in config.ADMIN_USER_IDS:
-        await message.reply("Admins only.")
+        await message.reply(i18n.t(lang, "admins_only"))
         return
     chat_id = _configured_chat()
 
@@ -341,7 +480,7 @@ async def cmd_resolve(message: Message, bot: Bot) -> None:
             )
         ]
     )
-    await message.reply(f"Resolving {len(ids)} people via the API — this can take a while…")
+    await message.reply(i18n.t(lang, "resolve_start", n=len(ids)))
 
     done = 0
     for uid in ids:
@@ -353,9 +492,7 @@ async def cmd_resolve(message: Message, bot: Bot) -> None:
             continue  # user left the group, or the lookup was rejected
         await asyncio.sleep(0.1)  # be gentle with rate limits
 
-    await message.reply(
-        f"Resolved {done}/{len(ids)} names. Run /reindex to rewrite history with them."
-    )
+    await message.reply(i18n.t(lang, "resolve_done", done=done, total=len(ids)))
 
 
 # --- Group messages -------------------------------------------------------
@@ -432,15 +569,25 @@ async def on_private_message(message: Message, bot: Bot) -> None:
     await respond(message, message.text, _configured_chat())
 
 
+async def _dm_admin(bot: Bot, uid: int, text: str) -> None:
+    """DM one admin. Telegram only delivers if they have already /start'd the bot."""
+    try:
+        await bot.send_message(uid, text)
+    except TelegramForbiddenError:
+        log.warning("admin %s has not started a chat with the bot; cannot send %r", uid, text)
+    except Exception:
+        log.warning("failed to notify admin %s (%s)", uid, text, exc_info=True)
+
+
 async def _notify_admins(bot: Bot, text: str) -> None:
-    """DM each admin. Telegram only delivers if they have already /start'd the bot."""
     for uid in sorted(config.ADMIN_USER_IDS):
-        try:
-            await bot.send_message(uid, text)
-        except TelegramForbiddenError:
-            log.warning("admin %s has not started a chat with the bot; cannot send %r", uid, text)
-        except Exception:
-            log.warning("failed to notify admin %s (%s)", uid, text, exc_info=True)
+        await _dm_admin(bot, uid, text)
+
+
+async def _notify_status(bot: Bot, key: str, **kwargs) -> None:
+    for uid in sorted(config.ADMIN_USER_IDS):
+        lang = await _lang_for(uid)
+        await _dm_admin(bot, uid, i18n.t(lang, key, **kwargs))
 
 
 async def _on_startup(bot: Bot) -> None:
@@ -457,17 +604,42 @@ async def _on_startup(bot: Bot) -> None:
         log.warning("cannot reach TELEGRAM_CHAT_ID=%s", _configured_chat())
     log.info("configured chat %s (%s)", _configured_chat(), title)
     _admin_errors.attach(loop, lambda text: _notify_admins(bot, text))
-    await _notify_admins(
-        bot,
-        f"Bot is up\n{config.DB_PATH}: {s['messages']} messages, {s['windows']} windows"
-        f"{_span_lines(s)}"
-        f"\nchat: {title} (`{_configured_chat()}`)",
-    )
+    try:
+        await bot.set_my_commands(
+            commands_for_user(i18n.DEFAULT_LANG, user_id=0),
+            scope=BotCommandScopeDefault(),
+        )
+    except Exception:
+        log.warning("Could not set default commands", exc_info=True)
+    for admin_id in config.ADMIN_USER_IDS:
+        lang = await _lang_for(admin_id)
+        try:
+            scope = BotCommandScopeChat(chat_id=admin_id)
+            await bot.delete_my_commands(scope=scope)
+            await bot.set_my_commands(commands_for_user(lang, admin_id), scope=scope)
+        except Exception:
+            log.warning("Could not set admin commands for user %s", admin_id, exc_info=True)
+    for uid in sorted(config.ADMIN_USER_IDS):
+        lang = await _lang_for(uid)
+        await _dm_admin(
+            bot,
+            uid,
+            i18n.t(
+                lang,
+                "bot_up",
+                db=config.DB_PATH,
+                messages=s["messages"],
+                windows=s["windows"],
+                span=_span_lines(s, lang),
+                title=title,
+                chat_id=_configured_chat(),
+            ),
+        )
 
 
 async def _on_shutdown(bot: Bot) -> None:
     log.info("bot is down")
-    await _notify_admins(bot, "Bot is down")
+    await _notify_status(bot, "bot_down")
     _admin_errors.detach()
 
 

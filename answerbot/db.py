@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config
+from . import config, i18n
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -96,6 +96,12 @@ CREATE TABLE IF NOT EXISTS query_log (
   cited_ids   TEXT NOT NULL,
   latency_ms  INTEGER,
   model       TEXT
+);
+
+-- Per-user UI language (ru/en). Missing row means the default (Russian).
+CREATE TABLE IF NOT EXISTS user_prefs (
+  user_id INTEGER PRIMARY KEY,
+  lang    TEXT NOT NULL
 );
 """
 
@@ -271,3 +277,23 @@ def remap_chat_id(conn: sqlite3.Connection, old: int, new: int) -> int:
 
     conn.commit()
     return existed
+
+
+def get_user_lang(conn: sqlite3.Connection, user_id: int) -> str:
+    row = conn.execute(
+        "SELECT lang FROM user_prefs WHERE user_id=?", (user_id,)
+    ).fetchone()
+    if not row:
+        return i18n.DEFAULT_LANG
+    return i18n.normalize_lang(row[0])
+
+
+def set_user_lang(conn: sqlite3.Connection, user_id: int, lang: str) -> str:
+    lang = i18n.normalize_lang(lang)
+    conn.execute(
+        """INSERT INTO user_prefs (user_id, lang) VALUES (?, ?)
+           ON CONFLICT (user_id) DO UPDATE SET lang=excluded.lang""",
+        (user_id, lang),
+    )
+    conn.commit()
+    return lang

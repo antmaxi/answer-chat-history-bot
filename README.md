@@ -158,8 +158,9 @@ In the group it answers when @mentioned or replied to. In a DM it answers only
 if you are currently a member of `TELEGRAM_CHAT_ID`; otherwise it declines.
 New group messages are appended live; the tail is re-windowed every
 `LIVE_REINDEX_EVERY` messages, and every `LIVE_LOOKBACK_HOURS` the last couple
-of weeks are rebuilt so recent edits self-heal. `/stats`, `/info`, and (for
-admins) `/reindex` / `/reindex full` are available.
+of weeks are rebuilt so recent edits self-heal. `/stats`, `/info`, `/settings`
+(language: Russian by default, or English), and (for admins) `/reindex` /
+`/reindex full` are available.
 
 ## Switching the answer model
 
@@ -327,8 +328,9 @@ setup.
   the periodic pass (tail reindex still runs).
 - **`MEMBERSHIP_CACHE_SECONDS`** (`300`) — how long a "is this user in this
   chat?" Bot API lookup is remembered. DMs (`/start`, `/ask`, `/stats`,
-  `/info`, and questions) are declined unless `getChatMember` says the user is in
-  `TELEGRAM_CHAT_ID`.
+  `/info`, `/settings`, and questions) are declined unless `getChatMember`
+  says the user is in `TELEGRAM_CHAT_ID`. The UI is Russian by default;
+  `/settings` switches between Russian and English (saved per user).
 
 ## Tests
 

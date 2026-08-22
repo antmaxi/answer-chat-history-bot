@@ -38,6 +38,7 @@ Modules:
 - `retrieve.py` — hybrid BM25 + cosine, RRF, optional time-range and speaker filters
 - `timerange.py` / `people.py` / `followup.py` — question parsing helpers
 - `answer.py` — provider-agnostic LLM call, grounded prompt + citations
+- `i18n.py` — RU/EN UI strings; Russian default, `/settings` to switch
 - `bot.py` — aiogram: routing, DM allow-list, live ingest, cooldown, lookback
 - `eval.py` — golden-set success@k (`python -m answerbot.eval [--fixture]`)
 
@@ -168,7 +169,8 @@ Anna & Nino:` headers; the bot turns `[W3]` into `t.me/c/<chat>/<msg_id>` links.
 - **DM**: any plain message is a question if the sender is a member of
   `TELEGRAM_CHAT_ID` (`getChatMember`, TTL-cached). Non-members are declined.
   Search always uses that chat.
-- Commands: `/ask`, `/stats`; admins `/reindex` (lookback)
+- Commands: `/ask`, `/stats`, `/info`, `/settings` (UI language: Russian
+  default, or English); admins `/reindex` (lookback)
   and `/reindex full`, `/resolve` (Bot API names).
 - Per-user-per-chat cooldown (`ANSWER_COOLDOWN_SECONDS`); admins exempt.
 - Sliding-hour LLM caps (`ANSWER_MAX_PER_USER_PER_HOUR`, `ANSWER_MAX_PER_HOUR`);
