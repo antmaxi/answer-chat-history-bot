@@ -254,7 +254,7 @@ Change these, then run a full `index`.
 
 Hybrid keyword (FTS5) + vector search, merged with reciprocal rank fusion.
 
-- **`TOP_K`** (`8`) — windows passed to the LLM as excerpts.
+- **`TOP_K`** (`10`) — windows passed to the LLM as excerpts.
 - **`RRF_K`** (`20`) — RRF smoothing; lower keeps the top ranks more
   separated (the usual paper default is 60, which is meant for much longer
   result lists).
