@@ -28,11 +28,16 @@ RUN mkdir -p /data /opt/hf \
 # download so source edits do not bust the wheel or Hub layers.
 COPY pyproject.toml .
 
+# cursor-sdk is an optional extra for venv installs, but Docker always includes
+# it so LLM_PROVIDER=cursor works without a custom image. The local agent
+# runtime is the bundled cursor-sdk-bridge binary, not the Cursor IDE.
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools \
     && pip install torch --index-url https://download.pytorch.org/whl/cpu \
-    && python -c "import subprocess, sys, tomllib; deps = tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']; subprocess.check_call([sys.executable, '-m', 'pip', 'install', *deps])" \
-    && pip install torch --index-url https://download.pytorch.org/whl/cpu
+    && python -c "import subprocess, sys, tomllib; p = tomllib.load(open('pyproject.toml', 'rb'))['project']; deps = p['dependencies'] + p.get('optional-dependencies', {}).get('cursor', []); subprocess.check_call([sys.executable, '-m', 'pip', 'install', *deps])" \
+    && pip install torch --index-url https://download.pytorch.org/whl/cpu \
+    && python -c "from cursor_sdk import Agent, AgentOptions, CursorAgentError, LocalAgentOptions" \
+    && cursor-sdk-bridge --help >/dev/null
 
 # Default embed model, so the first `index` is not a surprise Hub download.
 # chown here (not after COPY of app code) so a source change does not re-walk

@@ -158,8 +158,8 @@ In the group it answers when @mentioned or replied to. In a DM it answers only
 if you are currently a member of `TELEGRAM_CHAT_ID`; otherwise it declines.
 New group messages are appended live; the tail is re-windowed every
 `LIVE_REINDEX_EVERY` messages, and every `LIVE_LOOKBACK_HOURS` the last couple
-of weeks are rebuilt so recent edits self-heal. `/stats` and (for admins)
-`/reindex` / `/reindex full` are available.
+of weeks are rebuilt so recent edits self-heal. `/stats`, `/info`, and (for
+admins) `/reindex` / `/reindex full` are available.
 
 ## Switching the answer model
 
@@ -176,11 +176,11 @@ Set `LLM_PROVIDER` and, if needed, `ANSWER_MODEL`:
   including paid ones without the `:free` suffix)
 - **Cursor**: `LLM_PROVIDER=cursor` and `CURSOR_API_KEY` from
   [cursor.com/dashboard/api](https://cursor.com/dashboard/api) (Pro or
-  higher). Install the extra with `pip install 'answerbot[cursor]'`.
-  Defaults to `composer-2.5`, which bills the included Cursor Models
-  pool rather than a third-party API. This is a local Cursor agent
-  (`tools=[]`, text only) — not an OpenAI-compatible `/chat/completions`
-  endpoint — so the default Docker image does not include it.
+  higher). A venv install needs the extra (`pip install 'answerbot[cursor]'`);
+  the Docker image already includes it. Defaults to `composer-2.5`, which
+  bills the included Cursor Models pool rather than a third-party API.
+  This is a local Cursor agent (`tools=[]`, text only) — not an
+  OpenAI-compatible `/chat/completions` endpoint.
 - **Ollama**: `LLM_PROVIDER=ollama`, `ANSWER_MODEL` to a pulled model, and
   optionally `OLLAMA_HOST` / `LLM_TIMEOUT`
 
@@ -316,14 +316,18 @@ setup.
   ERROR logs with traceback; they can run `/reindex` and skip the answer
   cooldown and hourly quotas. Open a DM with the bot first so it can write
   to you.
+- **`GITHUB_REPO`** (`https://github.com/antmaxi/answer-chat-history-bot`)
+  — source-code URL shown by `/info`.
+- **`DISPLAY_UTC_OFFSET_HOURS`** (`2`) — UTC offset for wall-clock times
+  in `/info` (default UTC+2). Valid range is −12 to 14.
 - **`LIVE_REINDEX_EVERY`** (`20`) — new messages that may accumulate before
   the open tail is re-windowed.
 - **`LIVE_LOOKBACK_HOURS`** (`6`) — how often to rebuild the last
   `UPDATE_LOOKBACK_DAYS` of history so recent edits self-heal. `0` disables
   the periodic pass (tail reindex still runs).
 - **`MEMBERSHIP_CACHE_SECONDS`** (`300`) — how long a "is this user in this
-  chat?" Bot API lookup is remembered. DMs (`/start`, `/ask`, `/stats`, and
-  questions) are declined unless `getChatMember` says the user is in
+  chat?" Bot API lookup is remembered. DMs (`/start`, `/ask`, `/stats`,
+  `/info`, and questions) are declined unless `getChatMember` says the user is in
   `TELEGRAM_CHAT_ID`.
 
 ## Tests
