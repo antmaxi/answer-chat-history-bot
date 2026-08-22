@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 DEFAULT_LANG = "ru"
 SUPPORTED_LANGS: tuple[str, ...] = ("ru", "en")
 LANG_NATIVE_NAME: dict[str, str] = {
@@ -138,6 +140,34 @@ T: dict[str, dict[str, str]] = {
     },
 }
 
+# Overwritten in place on the placeholder reply while retrieve+LLM run.
+THINKING: dict[str, tuple[str, ...]] = {
+    "en": (
+        "Thinking…",
+        "Searching…",
+        "Looking…",
+        "Digging…",
+        "Scanning…",
+        "Reading…",
+        "Checking…",
+        "Hunting…",
+        "Sifting…",
+        "Browsing…",
+    ),
+    "ru": (
+        "Думаю…",
+        "Ищу…",
+        "Смотрю…",
+        "Копаюсь…",
+        "Просматриваю…",
+        "Читаю…",
+        "Проверяю…",
+        "Рыщу…",
+        "Перебираю…",
+        "Листаю…",
+    ),
+}
+
 
 def normalize_lang(lang: str | None) -> str:
     if lang in T:
@@ -157,6 +187,14 @@ def t(lang: str | None, key: str, **kwargs: object) -> str:
     if kwargs:
         return text.format(**kwargs)
     return text
+
+
+def thinking_phrase(lang: str | None, previous: str = "") -> str:
+    """Random waiting synonym in `lang`, different from `previous` when possible."""
+    lang = normalize_lang(lang)
+    choices = THINKING[lang]
+    others = tuple(p for p in choices if p != previous)
+    return random.choice(others or choices)
 
 
 def settings_text(lang: str) -> str:

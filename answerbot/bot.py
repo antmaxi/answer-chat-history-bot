@@ -355,6 +355,39 @@ def _quota_block(user_id: int, lang: str) -> str | None:
     return None
 
 
+_THINKING_INTERVAL = 2.5
+
+
+def _status_html(text: str) -> str:
+    return f"<i>{html.quote(text)}</i>"
+
+
+async def _spin_thinking(
+    msg: Message, lang: str, stop: asyncio.Event, last: str
+) -> None:
+    """Overwrite the placeholder with a fresh synonym until `stop` is set."""
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_THINKING_INTERVAL)
+            return
+        except TimeoutError:
+            pass
+        nxt = i18n.thinking_phrase(lang, last)
+        try:
+            await msg.edit_text(_status_html(nxt), parse_mode="HTML")
+            last = nxt
+        except Exception:
+            log.debug("thinking status edit failed", exc_info=True)
+
+
+async def _stop_thinking(stop: asyncio.Event, task: asyncio.Task) -> None:
+    stop.set()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 async def respond(message: Message, question: str, chat_id: int | list[int]) -> None:
     user_id = message.from_user.id if message.from_user else 0
     lang = await _lang_for(user_id)
@@ -381,7 +414,10 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         force = reply.from_user.id == me.id
     search_q = followup.rewrite(question, prior, force=force)
 
-    thinking = await message.reply("…")
+    phrase = i18n.thinking_phrase(lang)
+    thinking = await message.reply(_status_html(phrase), parse_mode="HTML")
+    stop = asyncio.Event()
+    spinner = asyncio.create_task(_spin_thinking(thinking, lang, stop, phrase))
     t0 = time.monotonic()
     try:
         # Encode any unwindowed tail off the DB lock, then search under it,
@@ -391,6 +427,7 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         if hits:
             blocked = _quota_block(user_id, lang)
             if blocked:
+                await _stop_thinking(stop, spinner)
                 await thinking.edit_text(blocked)
                 return
 
@@ -400,12 +437,16 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         result = await asyncio.to_thread(complete)
         await _db(answer._record, conn, question, chat_id, result, t0, None)
         _history[key].append(question)
+        await _stop_thinking(stop, spinner)
         await thinking.edit_text(
             format_answer(result, lang), parse_mode="HTML", disable_web_page_preview=True
         )
     except Exception:
         log.exception("failed to answer")
+        await _stop_thinking(stop, spinner)
         await thinking.edit_text(i18n.t(lang, "answer_failed"))
+    finally:
+        await _stop_thinking(stop, spinner)
 
 
 async def _consume_pending_ask(message: Message) -> bool:

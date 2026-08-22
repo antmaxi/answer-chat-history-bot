@@ -59,6 +59,25 @@ class TestStrings:
         assert i18n.t("en", "wait_minutes", n=3) == "3 min"
 
 
+class TestThinking:
+    def test_both_languages_have_matching_phrase_counts(self):
+        assert set(i18n.THINKING) == set(i18n.SUPPORTED_LANGS)
+        counts = {lang: len(i18n.THINKING[lang]) for lang in i18n.SUPPORTED_LANGS}
+        assert len(set(counts.values())) == 1
+        assert next(iter(counts.values())) >= 2
+
+    def test_phrase_comes_from_the_language_list(self):
+        for lang in i18n.SUPPORTED_LANGS:
+            assert i18n.thinking_phrase(lang) in i18n.THINKING[lang]
+        assert i18n.thinking_phrase("de") in i18n.THINKING[i18n.DEFAULT_LANG]
+
+    def test_avoids_the_previous_phrase(self):
+        for lang in i18n.SUPPORTED_LANGS:
+            for prev in i18n.THINKING[lang]:
+                for _ in range(20):
+                    assert i18n.thinking_phrase(lang, prev) != prev
+
+
 class TestCommandSpecs:
     def test_same_commands_in_both_languages(self):
         ru = [name for name, _ in i18n.COMMAND_SPECS["ru"]]
