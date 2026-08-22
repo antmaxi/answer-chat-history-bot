@@ -154,13 +154,16 @@ python -m answerbot.bot
 
 Or `docker compose up -d` if you followed [Docker](#docker) above.
 
-In the group it answers when @mentioned or replied to. In a DM it answers only
+In the group it answers when @mentioned or replied to, or after `/ask` (then
+the next message is the question). `/ask <question>` still works in one step.
+In a DM it answers only
 if you are currently a member of `TELEGRAM_CHAT_ID`; otherwise it declines.
 New group messages are appended live; the tail is re-windowed every
 `LIVE_REINDEX_EVERY` messages, and every `LIVE_LOOKBACK_HOURS` the last couple
-of weeks are rebuilt so recent edits self-heal. `/stats`, `/info`, `/settings`
-(language: Russian by default, or English), and (for admins) `/reindex` /
-`/reindex full` are available.
+of weeks are rebuilt so recent edits self-heal. `/info` (includes index
+size), `/settings` (language: Russian by default, or English), and (for
+admins) `/stats`, `/reindex` / `/reindex full` are available. Non-admins
+see only `/ask`, `/settings`, `/info`, and `/help` in the command menu.
 
 ## Switching the answer model
 
@@ -311,7 +314,8 @@ setup.
   Privacy mode must be **off** or the bot sees no group messages.
 - **`TELEGRAM_CHAT_ID`** — the one supergroup the bot serves. Use the Bot API
   id (`-100…`). A positive id is stored as `-100<id>`. Search, live ingest,
-  and DM access are all pinned to this chat.
+  and DM access are all pinned to this chat. `/ask` with no question uses
+  this chat’s Telegram title in the prompt.
 - **`ADMIN_USER_IDS`** — numeric Telegram user ids (space- or
   comma-separated). Those accounts get `Bot is up` / `Bot is down` DMs and
   ERROR logs with traceback; they can run `/reindex` and skip the answer
@@ -327,8 +331,8 @@ setup.
   `UPDATE_LOOKBACK_DAYS` of history so recent edits self-heal. `0` disables
   the periodic pass (tail reindex still runs).
 - **`MEMBERSHIP_CACHE_SECONDS`** (`300`) — how long a "is this user in this
-  chat?" Bot API lookup is remembered. DMs (`/start`, `/ask`, `/stats`,
-  `/info`, `/settings`, and questions) are declined unless `getChatMember`
+  chat?" Bot API lookup is remembered. DMs (`/start`, `/ask`, `/info`,
+  `/settings`, and questions) are declined unless `getChatMember`
   says the user is in `TELEGRAM_CHAT_ID`. The UI is Russian by default;
   `/settings` switches between Russian and English (saved per user).
 

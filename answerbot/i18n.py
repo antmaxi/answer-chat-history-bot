@@ -8,26 +8,26 @@ LANG_NATIVE_NAME: dict[str, str] = {
     "ru": "Русский",
     "en": "English",
 }
-ADMIN_COMMANDS = frozenset({"reindex", "resolve"})
+ADMIN_COMMANDS = frozenset({"stats", "reindex", "resolve"})
 
 COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
     "ru": [
         ("ask", "Задать вопрос"),
-        ("stats", "Размер индекса"),
         ("settings", "⚙️ Настройки"),
+        ("stats", "Размер индекса"),
         ("reindex", "Обновить индекс"),
         ("resolve", "Имена участников"),
-        ("help", "Как пользоваться ботом"),
         ("info", "ℹ️ О боте"),
+        ("help", "Как пользоваться ботом"),
     ],
     "en": [
         ("ask", "Ask a question"),
-        ("stats", "Index size"),
         ("settings", "⚙️ Settings"),
+        ("stats", "Index size"),
         ("reindex", "Rebuild recent index"),
         ("resolve", "Fix member names"),
-        ("help", "How to use the bot"),
         ("info", "ℹ️ About the bot"),
+        ("help", "How to use the bot"),
     ],
 }
 
@@ -36,13 +36,14 @@ T: dict[str, dict[str, str]] = {
         "not_member": "You're not a member of the group this bot serves.",
         "help": (
             "I answer questions from the group's history.\n"
-            "In the group, @mention me or reply to my messages. In DM, just ask.\n"
-            "Commands: /ask <question>, /stats, /info, /settings"
+            "In the group, @mention me, reply to my messages, or /ask. In DM, just ask.\n"
+            "Commands: /ask, /ask <question>, /settings, /info"
         ),
         "help_admin": (
-            "\nAdmins: /reindex (recent), /reindex full, /resolve (fix member names)"
+            "\nAdmins: /stats, /reindex (recent), /reindex full, /resolve (fix member names)"
         ),
         "ask_empty": "Ask me a question about this chat's history.",
+        "ask_prompt": "What is your question on the chat {name}?",
         "cooldown": "Wait {wait} before asking again.",
         "quota_user": "Hourly limit reached. Try again in {wait}.",
         "quota_global": "The bot's hourly limit is reached. Try again in {wait}.",
@@ -87,13 +88,14 @@ T: dict[str, dict[str, str]] = {
         "not_member": "Вы не состоите в группе, которую обслуживает этот бот.",
         "help": (
             "Я отвечаю на вопросы по истории группы.\n"
-            "В группе упомяните меня или ответьте на моё сообщение. В личке просто спросите.\n"
-            "Команды: /ask <вопрос>, /stats, /info, /settings"
+            "В группе упомяните меня, ответьте на моё сообщение или /ask. В личке просто спросите.\n"
+            "Команды: /ask, /ask <вопрос>, /settings, /info"
         ),
         "help_admin": (
-            "\nАдминам: /reindex (недавнее), /reindex full, /resolve (имена участников)"
+            "\nАдминам: /stats, /reindex (недавнее), /reindex full, /resolve (имена участников)"
         ),
         "ask_empty": "Задайте вопрос об истории этого чата.",
+        "ask_prompt": "Какой у вас вопрос по чату {name}?",
         "cooldown": "Подождите {wait}, прежде чем спросить снова.",
         "quota_user": "Часовой лимит исчерпан. Попробуйте снова через {wait}.",
         "quota_global": "Часовой лимит бота исчерпан. Попробуйте снова через {wait}.",

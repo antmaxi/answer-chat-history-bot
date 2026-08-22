@@ -23,9 +23,14 @@ class TestStrings:
     def test_en_and_ru_have_the_same_keys(self):
         assert set(i18n.T["en"]) == set(i18n.T["ru"])
 
-    def test_help_mentions_settings(self):
-        assert "/settings" in i18n.t("ru", "help")
-        assert "/settings" in i18n.t("en", "help")
+    def test_help_omits_admin_commands(self):
+        for lang in ("ru", "en"):
+            text = i18n.t(lang, "help")
+            assert "/stats" not in text
+            assert "/reindex" not in text
+            assert "/settings" in text
+            assert "/info" in text
+        assert "/stats" in i18n.t("en", "help_admin")
 
     def test_settings_text_shows_current_language(self):
         ru = i18n.settings_text("ru")
@@ -38,6 +43,14 @@ class TestStrings:
     def test_lang_set_toast_matches_the_new_language(self):
         assert "Русский" in i18n.t("ru", "lang_set")
         assert "English" in i18n.t("en", "lang_set")
+
+    def test_ask_prompt_includes_chat_name(self):
+        assert i18n.t("en", "ask_prompt", name="RUPR") == (
+            "What is your question on the chat RUPR?"
+        )
+        assert i18n.t("ru", "ask_prompt", name="RUPR") == (
+            "Какой у вас вопрос по чату RUPR?"
+        )
 
     def test_quota_wait_format(self):
         assert i18n.t("ru", "wait_seconds", n=5) == "5 с"
@@ -57,4 +70,7 @@ class TestCommandSpecs:
             cmds = [name for name, _ in i18n.COMMAND_SPECS[lang]]
             assert "settings" in cmds
             assert "info" in cmds
-            assert cmds[-2:] == ["help", "info"]
+            assert "help" in cmds
+            visible = [c for c in cmds if c not in i18n.ADMIN_COMMANDS]
+            assert visible == ["ask", "settings", "info", "help"]
+            assert "stats" in i18n.ADMIN_COMMANDS

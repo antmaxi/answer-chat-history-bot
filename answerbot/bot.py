@@ -32,7 +32,7 @@ from aiogram.types import (
 )
 
 from . import adminlog, answer, config, cooldown, db, embed, followup, i18n, index, logconfig, membership, people, retrieve
-from .info import format_info, last_update
+from .info import format_info, format_stats, last_update
 from .ingest import live
 from .ingest.export import desktop_ids_for
 
@@ -54,6 +54,10 @@ _members = membership.MembershipCache(config.MEMBERSHIP_CACHE_SECONDS)
 _history: dict[tuple[int, int], deque[str]] = defaultdict(lambda: deque(maxlen=4))
 _admin_errors = adminlog.AdminErrorHandler()
 _lang_cache: dict[int, str] = {}
+# (chat_id, user_id) -> monotonic time /ask was issued with no question yet.
+_pending_ask: dict[tuple[int, int], float] = {}
+_ASK_PENDING_SECONDS = 5 * 60
+_chat_title = ""
 
 
 async def _db(fn, *args):
@@ -117,6 +121,57 @@ def _configured_chat() -> int:
     if chat_id is None:
         raise RuntimeError("TELEGRAM_CHAT_ID is not set")
     return chat_id
+
+
+async def _refresh_chat_title(bot: Bot, message: Message | None = None) -> str:
+    """Telegram title of TELEGRAM_CHAT_ID (same source as the startup stats DM)."""
+    global _chat_title
+    if (
+        message is not None
+        and message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+        and message.chat.id == _configured_chat()
+        and message.chat.title
+    ):
+        _chat_title = message.chat.title
+        return _chat_title
+    try:
+        chat = await bot.get_chat(_configured_chat())
+        _chat_title = chat.title or str(_configured_chat())
+    except Exception:
+        if not _chat_title:
+            _chat_title = str(_configured_chat())
+    return _chat_title
+
+
+def _ask_key(message: Message) -> tuple[int, int] | None:
+    if message.from_user is None:
+        return None
+    return (message.chat.id, message.from_user.id)
+
+
+def _cancel_pending_ask(message: Message) -> None:
+    key = _ask_key(message)
+    if key is not None:
+        _pending_ask.pop(key, None)
+
+
+def _arm_pending_ask(message: Message) -> None:
+    key = _ask_key(message)
+    if key is not None:
+        _pending_ask[key] = time.monotonic()
+
+
+def _pending_ask_ready(message: Message) -> bool:
+    key = _ask_key(message)
+    if key is None:
+        return False
+    started = _pending_ask.get(key)
+    if started is None:
+        return False
+    if time.monotonic() - started > _ASK_PENDING_SECONDS:
+        _pending_ask.pop(key, None)
+        return False
+    return True
 
 
 def _span_lines(s: dict, lang: str) -> str:
@@ -353,12 +408,25 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         await thinking.edit_text(i18n.t(lang, "answer_failed"))
 
 
+async def _consume_pending_ask(message: Message) -> bool:
+    """If this user was prompted by bare /ask, treat the message as the question."""
+    if not _pending_ask_ready(message):
+        return False
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        return False
+    _cancel_pending_ask(message)
+    await respond(message, text, _configured_chat())
+    return True
+
+
 # --- Commands -------------------------------------------------------------
 
 @dp.message(Command("start", "help"))
 async def cmd_help(message: Message, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
+    _cancel_pending_ask(message)
     await set_user_commands(bot, message.chat, message.from_user)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
     text = i18n.t(lang, "help")
@@ -371,9 +439,11 @@ async def cmd_help(message: Message, bot: Bot) -> None:
 async def cmd_info(message: Message, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
+    _cancel_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
+    s = await _db(db.stats, conn)
     await message.reply(
-        format_info(last_update(), lang),
+        format_info(last_update(), lang, stats=s),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -383,6 +453,7 @@ async def cmd_info(message: Message, bot: Bot) -> None:
 async def cmd_settings(message: Message, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
+    _cancel_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
     await message.reply(
         i18n.settings_text(lang),
@@ -413,32 +484,38 @@ async def settings_toggle_lang(query: CallbackQuery, bot: Bot) -> None:
 async def cmd_ask(message: Message, command, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
-    await respond(message, command.args or "", _configured_chat())
+    question = (command.args or "").strip()
+    if question:
+        _cancel_pending_ask(message)
+        await respond(message, question, _configured_chat())
+        return
+    _arm_pending_ask(message)
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
+    name = await _refresh_chat_title(bot, message)
+    await message.reply(
+        i18n.t(lang, "ask_prompt", name=html.quote(name)),
+        parse_mode="HTML",
+    )
 
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
+    _cancel_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
+    if message.from_user.id not in config.ADMIN_USER_IDS:
+        await message.reply(i18n.t(lang, "admins_only"))
+        return
     s = await _db(db.stats, conn)
-    await message.reply(
-        i18n.t(
-            lang,
-            "stats",
-            messages=s["messages"],
-            windows=s["windows"],
-            embedded=s["embedded"],
-            chats=s["chats"],
-        )
-        + _span_lines(s, lang)
-    )
+    await message.reply(format_stats(s, lang))
 
 
 @dp.message(Command("reindex"))
 async def cmd_reindex(message: Message, command, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
+    _cancel_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
     if message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply(i18n.t(lang, "admins_only"))
@@ -465,6 +542,7 @@ async def cmd_resolve(message: Message, bot: Bot) -> None:
     """
     if not await _ensure_member(message, bot):
         return
+    _cancel_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
     if message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply(i18n.t(lang, "admins_only"))
@@ -545,6 +623,9 @@ async def on_group_message(message: Message, bot: Bot) -> None:
 
     await _ingest_group_message(message)
 
+    if await _consume_pending_ask(message):
+        return
+
     if await _mentions_bot(message, bot):
         me = await bot.me()
         question = text.replace(f"@{me.username}", "").strip()
@@ -565,6 +646,8 @@ async def on_private_message(message: Message, bot: Bot) -> None:
     if not message.text:
         return
     if not await _ensure_member(message, bot):
+        return
+    if await _consume_pending_ask(message):
         return
     await respond(message, message.text, _configured_chat())
 
@@ -591,6 +674,7 @@ async def _notify_status(bot: Bot, key: str, **kwargs) -> None:
 
 
 async def _on_startup(bot: Bot) -> None:
+    global _chat_title
     s = db.stats(conn)
     log.info("bot is up; database %s: %s", config.DB_PATH, s)
     loop = asyncio.get_running_loop()
@@ -602,6 +686,7 @@ async def _on_startup(bot: Bot) -> None:
     except Exception:
         title = str(_configured_chat())
         log.warning("cannot reach TELEGRAM_CHAT_ID=%s", _configured_chat())
+    _chat_title = title
     log.info("configured chat %s (%s)", _configured_chat(), title)
     _admin_errors.attach(loop, lambda text: _notify_admins(bot, text))
     try:

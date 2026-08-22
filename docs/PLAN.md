@@ -169,9 +169,11 @@ Anna & Nino:` headers; the bot turns `[W3]` into `t.me/c/<chat>/<msg_id>` links.
 - **DM**: any plain message is a question if the sender is a member of
   `TELEGRAM_CHAT_ID` (`getChatMember`, TTL-cached). Non-members are declined.
   Search always uses that chat.
-- Commands: `/ask`, `/stats`, `/info`, `/settings` (UI language: Russian
-  default, or English); admins `/reindex` (lookback)
-  and `/reindex full`, `/resolve` (Bot API names).
+- Commands: `/ask` (prompt, then the next message) or `/ask <question>`;
+  `/info` (includes index stats), `/settings` (UI language:
+  Russian default, or English); admins also `/stats`, `/reindex` (lookback)
+  and `/reindex full`, `/resolve` (Bot API names). Non-admins see only
+  `/ask`, `/settings`, `/info`, `/help` in the command menu.
 - Per-user-per-chat cooldown (`ANSWER_COOLDOWN_SECONDS`); admins exempt.
 - Sliding-hour LLM caps (`ANSWER_MAX_PER_USER_PER_HOUR`, `ANSWER_MAX_PER_HOUR`);
   admins exempt. In-memory, counted only when retrieval returned windows.

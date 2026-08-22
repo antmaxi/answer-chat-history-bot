@@ -62,14 +62,36 @@ def last_update() -> str:
         return "unknown"
 
 
-def format_info(updated: str, lang: str | None = None) -> str:
+def format_stats(s: dict, lang: str | None = None) -> str:
+    lang = i18n.normalize_lang(lang)
+    first, last = s.get("first_message"), s.get("last_message")
+    span = ""
+    if first and last:
+        span = i18n.t(lang, "stats_span", first=first, last=last)
+    return (
+        i18n.t(
+            lang,
+            "stats",
+            messages=s.get("messages", 0),
+            windows=s.get("windows", 0),
+            embedded=s.get("embedded", 0),
+            chats=s.get("chats", 0),
+        )
+        + span
+    )
+
+
+def format_info(updated: str, lang: str | None = None, stats: dict | None = None) -> str:
     lang = i18n.normalize_lang(lang)
     if updated == "unknown":
         updated = i18n.t(lang, "unknown")
-    return i18n.t(
+    text = i18n.t(
         lang,
         "info_msg",
         bot_name=i18n.t(lang, "bot_name"),
         last_commit=html.escape(updated),
         github_repo=html.escape(config.GITHUB_REPO),
     )
+    if stats is not None:
+        text += "\n\n" + format_stats(stats, lang)
+    return text

@@ -164,7 +164,7 @@ def _iso_utc(ts: int | None) -> str | None:
 
 
 def stats(conn: sqlite3.Connection) -> dict:
-    """Row counts and the indexed message span, for the CLI and /stats."""
+    """Row counts and the indexed message span, for the CLI and /info."""
     def count(table: str) -> int:
         return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from answerbot import config
-from answerbot.info import fmt_dt_utc, format_info, last_update
+from answerbot.info import fmt_dt_utc, format_info, format_stats, last_update
 
 
 GIT_COMMIT_EPOCH = 1775649600  # 2026-04-04 12:00:00 UTC
@@ -97,3 +97,29 @@ class TestFormatInfo:
         assert "Последнее обновление" in text
         assert "Бот истории чата" in text
         assert "@antmaxi" in text
+
+    def test_appends_index_stats(self, monkeypatch):
+        monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
+        s = {
+            "messages": 10,
+            "windows": 3,
+            "embedded": 3,
+            "chats": 1,
+            "first_message": "2023-11-14 22:13 UTC",
+            "last_message": "2023-11-14 23:13 UTC",
+        }
+        text = format_info("2026-04-04 14:00:00 UTC+02:00", "en", stats=s)
+        assert "Last update" in text
+        assert "messages: 10" in text
+        assert "windows: 3" in text
+        assert "embedded: 3" in text
+        assert "chats: 1" in text
+        assert "first: 2023-11-14 22:13 UTC" in text
+        assert "last: 2023-11-14 23:13 UTC" in text
+
+    def test_format_stats_omits_span_when_empty(self):
+        text = format_stats(
+            {"messages": 0, "windows": 0, "embedded": 0, "chats": 0}, "en"
+        )
+        assert "messages: 0" in text
+        assert "first:" not in text
