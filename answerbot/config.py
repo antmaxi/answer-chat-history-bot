@@ -42,7 +42,7 @@ UPDATE_LOOKBACK_DAYS = int(os.getenv("UPDATE_LOOKBACK_DAYS", "14"))
 SPEAKER_LABEL = os.getenv("SPEAKER_LABEL", "name").strip().lower()
 
 # Retrieval
-TOP_K = int(os.getenv("TOP_K", "8"))
+TOP_K = int(os.getenv("TOP_K", "10"))
 # RRF_K flattens score differences; 60 is the paper's default and suits large
 # corpora, but result lists here are short, so a smaller value keeps top ranks
 # meaningfully separated.
