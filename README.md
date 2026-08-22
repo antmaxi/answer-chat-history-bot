@@ -161,9 +161,10 @@ if you are currently a member of `TELEGRAM_CHAT_ID`; otherwise it declines.
 New group messages are appended live; the tail is re-windowed every
 `LIVE_REINDEX_EVERY` messages, and every `LIVE_LOOKBACK_HOURS` the last couple
 of weeks are rebuilt so recent edits self-heal. `/info` (includes index
-size), `/settings` (language: Russian by default, or English), and (for
-admins) `/stats`, `/reindex` / `/reindex full` are available. Non-admins
-see only `/ask`, `/settings`, `/info`, and `/help` in the command menu.
+size), `/settings` (language: Russian by default, or English), `/cancel`
+(stop a running search), and (for admins) `/stats`, `/reindex` /
+`/reindex full` are available. Non-admins see only `/ask`, `/cancel`,
+`/settings`, `/info`, and `/help` in the command menu.
 
 ## Switching the answer model
 

@@ -15,6 +15,7 @@ ADMIN_COMMANDS = frozenset({"stats", "reindex", "resolve"})
 COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
     "ru": [
         ("ask", "Задать вопрос"),
+        ("cancel", "Отменить поиск"),
         ("settings", "⚙️ Настройки"),
         ("stats", "Размер индекса"),
         ("reindex", "Обновить индекс"),
@@ -24,6 +25,7 @@ COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
     ],
     "en": [
         ("ask", "Ask a question"),
+        ("cancel", "Stop the current search"),
         ("settings", "⚙️ Settings"),
         ("stats", "Index size"),
         ("reindex", "Rebuild recent index"),
@@ -39,13 +41,15 @@ T: dict[str, dict[str, str]] = {
         "help": (
             "I answer questions from the group's history.\n"
             "In the group, @mention me, reply to my messages, or /ask. In DM, just ask.\n"
-            "Commands: /ask, /ask <question>, /settings, /info"
+            "Commands: /ask, /ask <question>, /cancel, /settings, /info"
         ),
         "help_admin": (
             "\nAdmins: /stats, /reindex (recent), /reindex full, /resolve (fix member names)"
         ),
         "ask_empty": "Ask me a question about this chat's history.",
         "ask_prompt": "What is your question on the chat {name}?",
+        "search_cancelled": "Search cancelled.",
+        "nothing_to_cancel": "Nothing to cancel.",
         "cooldown": "Wait {wait} before asking again.",
         "quota_user": "Hourly limit reached. Try again in {wait}.",
         "quota_global": "The bot's hourly limit is reached. Try again in {wait}.",
@@ -91,13 +95,15 @@ T: dict[str, dict[str, str]] = {
         "help": (
             "Я отвечаю на вопросы по истории группы.\n"
             "В группе упомяните меня, ответьте на моё сообщение или /ask. В личке просто спросите.\n"
-            "Команды: /ask, /ask <вопрос>, /settings, /info"
+            "Команды: /ask, /ask <вопрос>, /cancel, /settings, /info"
         ),
         "help_admin": (
             "\nАдминам: /stats, /reindex (недавнее), /reindex full, /resolve (имена участников)"
         ),
         "ask_empty": "Задайте вопрос об истории этого чата.",
         "ask_prompt": "Какой у вас вопрос по чату {name}?",
+        "search_cancelled": "Поиск отменён.",
+        "nothing_to_cancel": "Сейчас нечего отменять.",
         "cooldown": "Подождите {wait}, прежде чем спросить снова.",
         "quota_user": "Часовой лимит исчерпан. Попробуйте снова через {wait}.",
         "quota_global": "Часовой лимит бота исчерпан. Попробуйте снова через {wait}.",

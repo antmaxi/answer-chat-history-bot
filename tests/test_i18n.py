@@ -30,6 +30,7 @@ class TestStrings:
             assert "/reindex" not in text
             assert "/settings" in text
             assert "/info" in text
+            assert "/cancel" in text
         assert "/stats" in i18n.t("en", "help_admin")
 
     def test_settings_text_shows_current_language(self):
@@ -57,6 +58,12 @@ class TestStrings:
         assert i18n.t("en", "wait_seconds", n=5) == "5s"
         assert i18n.t("ru", "wait_minutes", n=3) == "3 мин"
         assert i18n.t("en", "wait_minutes", n=3) == "3 min"
+
+    def test_cancel_feedback(self):
+        assert i18n.t("en", "search_cancelled") == "Search cancelled."
+        assert i18n.t("ru", "search_cancelled") == "Поиск отменён."
+        assert i18n.t("en", "nothing_to_cancel") == "Nothing to cancel."
+        assert i18n.t("ru", "nothing_to_cancel") == "Сейчас нечего отменять."
 
 
 class TestThinking:
@@ -91,5 +98,5 @@ class TestCommandSpecs:
             assert "info" in cmds
             assert "help" in cmds
             visible = [c for c in cmds if c not in i18n.ADMIN_COMMANDS]
-            assert visible == ["ask", "settings", "info", "help"]
+            assert visible == ["ask", "cancel", "settings", "info", "help"]
             assert "stats" in i18n.ADMIN_COMMANDS

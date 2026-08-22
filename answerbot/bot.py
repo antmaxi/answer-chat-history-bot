@@ -57,6 +57,8 @@ _lang_cache: dict[int, str] = {}
 # (chat_id, user_id) -> monotonic time /ask was issued with no question yet.
 _pending_ask: dict[tuple[int, int], float] = {}
 _ASK_PENDING_SECONDS = 5 * 60
+# In-flight retrieve+answer tasks, cancelled by /cancel.
+_in_flight: dict[tuple[int, int], set[asyncio.Task]] = defaultdict(set)
 _chat_title = ""
 
 
@@ -172,6 +174,35 @@ def _pending_ask_ready(message: Message) -> bool:
         _pending_ask.pop(key, None)
         return False
     return True
+
+
+def _track_in_flight(key: tuple[int, int]) -> asyncio.Task | None:
+    task = asyncio.current_task()
+    if task is not None:
+        _in_flight[key].add(task)
+    return task
+
+
+def _untrack_in_flight(key: tuple[int, int], task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    tasks = _in_flight.get(key)
+    if not tasks:
+        return
+    tasks.discard(task)
+    if not tasks:
+        _in_flight.pop(key, None)
+
+
+def _cancel_in_flight(key: tuple[int, int]) -> int:
+    """Cancel this user's running searches. Returns how many tasks were cancelled."""
+    tasks = _in_flight.pop(key, set())
+    n = 0
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+            n += 1
+    return n
 
 
 def _span_lines(s: dict, lang: str) -> str:
@@ -380,12 +411,35 @@ async def _spin_thinking(
             log.debug("thinking status edit failed", exc_info=True)
 
 
-async def _stop_thinking(stop: asyncio.Event, task: asyncio.Task) -> None:
+async def _stop_thinking(stop: asyncio.Event, task: asyncio.Task | None) -> None:
     stop.set()
+    if task is None:
+        return
     try:
         await task
     except asyncio.CancelledError:
         pass
+
+
+async def _abandon_search(
+    thinking: Message | None,
+    stop: asyncio.Event,
+    spinner: asyncio.Task | None,
+    lang: str,
+) -> None:
+    """Stop the spinner and drop the placeholder so a cancelled search leaves no status."""
+    await _stop_thinking(stop, spinner)
+    if thinking is None:
+        return
+    try:
+        await thinking.delete()
+    except Exception:
+        try:
+            await thinking.edit_text(
+                _status_html(i18n.t(lang, "search_cancelled")), parse_mode="HTML"
+            )
+        except Exception:
+            log.debug("cancel status update failed", exc_info=True)
 
 
 async def respond(message: Message, question: str, chat_id: int | list[int]) -> None:
@@ -406,20 +460,23 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
     _answers.touch((user_id, message.chat.id))
 
     key = (message.chat.id, user_id)
-    prior = _history[key][-1] if _history[key] else None
-    force = False
-    reply = message.reply_to_message
-    if reply and reply.from_user:
-        me = await message.bot.me()
-        force = reply.from_user.id == me.id
-    search_q = followup.rewrite(question, prior, force=force)
-
-    phrase = i18n.thinking_phrase(lang)
-    thinking = await message.reply(_status_html(phrase), parse_mode="HTML")
+    thinking: Message | None = None
+    spinner: asyncio.Task | None = None
     stop = asyncio.Event()
-    spinner = asyncio.create_task(_spin_thinking(thinking, lang, stop, phrase))
+    tracked = _track_in_flight(key)
     t0 = time.monotonic()
     try:
+        prior = _history[key][-1] if _history[key] else None
+        force = False
+        reply = message.reply_to_message
+        if reply and reply.from_user:
+            me = await message.bot.me()
+            force = reply.from_user.id == me.id
+        search_q = followup.rewrite(question, prior, force=force)
+
+        phrase = i18n.thinking_phrase(lang)
+        thinking = await message.reply(_status_html(phrase), parse_mode="HTML")
+        spinner = asyncio.create_task(_spin_thinking(thinking, lang, stop, phrase))
         # Encode any unwindowed tail off the DB lock, then search under it,
         # then call the LLM without holding either lock.
         await index_chats(chat_id)
@@ -428,6 +485,7 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
             blocked = _quota_block(user_id, lang)
             if blocked:
                 await _stop_thinking(stop, spinner)
+                spinner = None
                 await thinking.edit_text(blocked)
                 return
 
@@ -438,15 +496,24 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         await _db(answer._record, conn, question, chat_id, result, t0, None)
         _history[key].append(question)
         await _stop_thinking(stop, spinner)
+        spinner = None
         await thinking.edit_text(
             format_answer(result, lang), parse_mode="HTML", disable_web_page_preview=True
         )
+    except asyncio.CancelledError:
+        log.info("search cancelled user=%s chat=%s", user_id, message.chat.id)
+        await _abandon_search(thinking, stop, spinner, lang)
+        spinner = None
+        return
     except Exception:
         log.exception("failed to answer")
         await _stop_thinking(stop, spinner)
-        await thinking.edit_text(i18n.t(lang, "answer_failed"))
+        spinner = None
+        if thinking is not None:
+            await thinking.edit_text(i18n.t(lang, "answer_failed"))
     finally:
         await _stop_thinking(stop, spinner)
+        _untrack_in_flight(key, tracked)
 
 
 async def _consume_pending_ask(message: Message) -> bool:
@@ -537,6 +604,23 @@ async def cmd_ask(message: Message, command, bot: Bot) -> None:
         i18n.t(lang, "ask_prompt", name=html.quote(name)),
         parse_mode="HTML",
     )
+
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: Message, bot: Bot) -> None:
+    if not await _ensure_member(message, bot):
+        return
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
+    key = _ask_key(message)
+    had_pending = False
+    n = 0
+    if key is not None:
+        had_pending = _pending_ask.pop(key, None) is not None
+        n = _cancel_in_flight(key)
+    if n or had_pending:
+        await message.reply(i18n.t(lang, "search_cancelled"))
+    else:
+        await message.reply(i18n.t(lang, "nothing_to_cancel"))
 
 
 @dp.message(Command("stats"))
