@@ -5,9 +5,23 @@ The e5 family expects asymmetric prefixes — "passage: " for indexed text and
 quality, so the prefixes live here rather than at the call sites.
 """
 
+import os
+
 import numpy as np
 
 from . import config
+
+# Cap BLAS/OpenMP *before* torch is imported. After import these env vars are ignored.
+_nthreads = max(1, config.EMBED_THREADS)
+for _key in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+):
+    os.environ.setdefault(_key, str(_nthreads))
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 _model = None
 
@@ -15,8 +29,14 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
+        import torch
         from sentence_transformers import SentenceTransformer
 
+        torch.set_num_threads(_nthreads)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
         _model = SentenceTransformer(config.EMBED_MODEL)
     return _model
 
@@ -42,6 +62,11 @@ def encode_query(text: str) -> np.ndarray:
         text = f"query: {text}"
     vec = _get_model().encode([text], normalize_embeddings=True)
     return np.asarray(vec, dtype=np.float32)[0]
+
+
+def warmup() -> None:
+    """Load weights and run a dummy encode so the first user query is not the stall."""
+    encode_query("warmup")
 
 
 def pack(vec: np.ndarray) -> bytes:

@@ -160,7 +160,8 @@ In a DM it answers only
 if you are currently a member of `TELEGRAM_CHAT_ID`; otherwise it declines.
 New group messages are appended live; the tail is re-windowed every
 `LIVE_REINDEX_EVERY` messages, and every `LIVE_LOOKBACK_HOURS` the last couple
-of weeks are rebuilt so recent edits self-heal. `/info` (includes index
+of weeks are rebuilt so recent edits self-heal. Asking a question does **not**
+reindex — only those schedules (and `/reindex`) do. `/info` (includes index
 size), `/settings` (language: Russian by default, or English), `/cancel`
 (stop a running search), and (for admins) `/stats`, `/reindex` /
 `/reindex full` are available. Non-admins see only `/ask`, `/cancel`,
@@ -224,6 +225,8 @@ Local, no API key. A full `index` is required after changing these.
   model used to embed windows and queries.
 - **`EMBED_DIM`** (`384`) — vector width stored in SQLite. Must match the
   model; wrong values make search silently useless.
+- **`EMBED_THREADS`** (`1`) — CPU threads for the local embedding model.
+  The bot also warms the model at startup so the first question is not the stall.
 
 ### Windowing
 
@@ -255,7 +258,12 @@ Change these, then run a full `index`.
 
 Hybrid keyword (FTS5) + vector search, merged with reciprocal rank fusion.
 
-- **`TOP_K`** (`10`) — windows passed to the LLM as excerpts.
+- **`TOP_K`** (`10`) — windows ranked by fusion before the excerpt cap.
+- **`MIN_K`** (`3`) / **`MAX_K`** (`5`) — excerpts sent to the LLM. Always
+  keep at least `MIN_K`; stop early once cosine falls below `COSINE_MIN`;
+  never send more than `MAX_K`.
+- **`COSINE_MIN`** (`0.7`) — cosine floor for extra excerpts after `MIN_K`.
+  `0` disables the cutoff (always send `MAX_K`).
 - **`RRF_K`** (`20`) — RRF smoothing; lower keeps the top ranks more
   separated (the usual paper default is 60, which is meant for much longer
   result lists).

@@ -639,3 +639,54 @@ class TestLiveEdits:
         assert result["windows"] > 0
         assert "FORCED" in self._window_text_for(conn, last_id)
 
+
+
+class TestCapHits:
+    def _hits(self, cosines):
+        return [
+            Hit(i, 1, i, i, 0, 0, "A", f"t{i}", 1.0 - i * 0.01, cosine)
+            for i, cosine in enumerate(cosines, 1)
+        ]
+
+    def test_stops_after_min_k_once_cosine_drops(self):
+        kept = retrieve.cap_hits(
+            self._hits([0.9, 0.85, 0.8, 0.4, 0.9]), min_k=3, max_k=5, cosine_min=0.7
+        )
+        assert [h.window_id for h in kept] == [1, 2, 3]
+
+    def test_keeps_high_cosine_hits_until_max_k(self):
+        kept = retrieve.cap_hits(
+            self._hits([0.9, 0.88, 0.86, 0.84, 0.82, 0.80]),
+            min_k=3,
+            max_k=5,
+            cosine_min=0.7,
+        )
+        assert [h.window_id for h in kept] == [1, 2, 3, 4, 5]
+
+    def test_zero_threshold_is_a_plain_max_k_cap(self):
+        kept = retrieve.cap_hits(
+            self._hits([0.1, 0.1, 0.1, 0.1]), min_k=2, max_k=3, cosine_min=0
+        )
+        assert len(kept) == 3
+
+    def test_search_caps_when_top_k_is_omitted(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "MIN_K", 2)
+        monkeypatch.setattr(config, "MAX_K", 5)
+        monkeypatch.setattr(config, "COSINE_MIN", 0.7)
+        seed(conn, STREAM[:20])
+        index.reindex(conn, progress=False)
+        # Dummy zero vectors => cosine 0, so the cutoff trips right after MIN_K.
+        hits = retrieve.search(conn, "m1", chat_id=1)
+        assert len(hits) == 2
+
+    def test_explicit_top_k_skips_the_cosine_cap(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "MIN_K", 1)
+        monkeypatch.setattr(config, "MAX_K", 2)
+        monkeypatch.setattr(config, "COSINE_MIN", 0.7)
+        seed(conn, STREAM)
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(conn, "m1", chat_id=1, top_k=5)
+        # STREAM yields 3 windows. Cap would stop at MIN_K=1 (cosine is 0);
+        # skipping it returns every fused window, even past MAX_K=2.
+        assert len(hits) == 3
+        assert len(retrieve.search(conn, "m1", chat_id=1)) == 1

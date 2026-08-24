@@ -477,9 +477,8 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         phrase = i18n.thinking_phrase(lang)
         thinking = await message.reply(_status_html(phrase), parse_mode="HTML")
         spinner = asyncio.create_task(_spin_thinking(thinking, lang, stop, phrase))
-        # Encode any unwindowed tail off the DB lock, then search under it,
-        # then call the LLM without holding either lock.
-        await index_chats(chat_id)
+        # Search the last scheduled index. Live ingest + periodic lookback
+        # (and /reindex) refresh windows; doing that on every question pegs CPU.
         hits = await _db(retrieve.search, conn, search_q, chat_id)
         if hits:
             blocked = _quota_block(user_id, lang)
@@ -829,6 +828,12 @@ async def _on_startup(bot: Bot) -> None:
             await bot.set_my_commands(commands_for_user(lang, admin_id), scope=scope)
         except Exception:
             log.warning("Could not set admin commands for user %s", admin_id, exc_info=True)
+    log.info("warming embedding model (%s threads)", config.EMBED_THREADS)
+    try:
+        await asyncio.to_thread(embed.warmup)
+        log.info("embedding model ready")
+    except Exception:
+        log.exception("embedding warmup failed; the first search will load the model")
     for uid in sorted(config.ADMIN_USER_IDS):
         lang = await _lang_for(uid)
         await _dm_admin(

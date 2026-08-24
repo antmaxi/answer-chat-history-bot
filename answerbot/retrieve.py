@@ -51,6 +51,7 @@ class Hit:
     speakers: str
     text: str
     score: float
+    cosine: float = 0.0
 
     def when(self) -> str:
         return datetime.fromtimestamp(self.ts_start, timezone.utc).strftime("%Y-%m-%d")
@@ -201,6 +202,27 @@ def invalidate_cache() -> None:
     _df_cache.clear()
 
 
+def _vector_scores(
+    conn: sqlite3.Connection,
+    question: str,
+    chat_id: ChatId,
+    time_range: TimeRange | None = None,
+) -> tuple[list[int], np.ndarray]:
+    """Cosine of `question` against every (optionally time-filtered) window vector."""
+    ids, matrix, times = _vectors(conn, chat_id)
+    if not ids:
+        return [], np.zeros(0, dtype=np.float32)
+    if time_range is not None:
+        mask = (times[:, 1] >= time_range.start) & (times[:, 0] <= time_range.end)
+        if not np.any(mask):
+            return [], np.zeros(0, dtype=np.float32)
+        ids = [i for i, keep in zip(ids, mask) if keep]
+        matrix = matrix[mask]
+    # Vectors are normalized at write time, so a dot product is the cosine.
+    scores = matrix @ embed.encode_query(question)
+    return ids, scores
+
+
 def vector_search(
     conn: sqlite3.Connection,
     question: str,
@@ -208,21 +230,40 @@ def vector_search(
     limit: int,
     time_range: TimeRange | None = None,
 ) -> list[int]:
-    ids, matrix, times = _vectors(conn, chat_id)
+    ids, scores = _vector_scores(conn, question, chat_id, time_range)
     if not ids:
         return []
-
-    if time_range is not None:
-        mask = (times[:, 1] >= time_range.start) & (times[:, 0] <= time_range.end)
-        if not np.any(mask):
-            return []
-        ids = [i for i, keep in zip(ids, mask) if keep]
-        matrix = matrix[mask]
-
-    # Vectors are normalized at write time, so a dot product is the cosine.
-    scores = matrix @ embed.encode_query(question)
     top = np.argsort(-scores)[:limit]
     return [ids[i] for i in top]
+
+
+def cap_hits(
+    hits: list[Hit],
+    min_k: int | None = None,
+    max_k: int | None = None,
+    cosine_min: float | None = None,
+) -> list[Hit]:
+    """Shorten a ranked hit list to MIN_K..MAX_K using cosine as a stop signal.
+
+    Always keep the first min_k (so a thin question still has context). After
+    that, stop at the first window whose cosine is below cosine_min. Never
+    return more than max_k. cosine_min <= 0 disables the cutoff.
+    """
+    if not hits:
+        return []
+    min_k = config.MIN_K if min_k is None else min_k
+    max_k = config.MAX_K if max_k is None else max_k
+    cosine_min = config.COSINE_MIN if cosine_min is None else cosine_min
+    max_k = max(1, max_k)
+    min_k = min(max(0, min_k), max_k)
+    kept: list[Hit] = []
+    for hit in hits:
+        if len(kept) >= max_k:
+            break
+        if len(kept) >= min_k and cosine_min > 0 and hit.cosine < cosine_min:
+            break
+        kept.append(hit)
+    return kept
 
 
 def search(
@@ -244,17 +285,25 @@ def search(
     if speaker is None:
         speaker = people.parse_speaker(question, people.known_speakers(conn))
 
+    explicit_k = top_k is not None
     top_k = top_k or config.TOP_K
     pool = top_k * 4
     if time_range or speaker:
         pool = top_k * 8
+
+    vec_ids, vec_scores = _vector_scores(conn, question, chat_id, time_range)
+    cosine = {wid: float(s) for wid, s in zip(vec_ids, vec_scores)}
+    if vec_ids:
+        vec_ranking = [vec_ids[i] for i in np.argsort(-vec_scores)[:pool]]
+    else:
+        vec_ranking = []
 
     # Vector search carries more weight: most questions are paraphrases of what
     # was actually said. Keyword search earns its place on names, numbers and
     # exact strings like passwords, where embeddings are weak.
     rankings = [
         (keyword_search(conn, question, chat_id, pool, time_range), config.WEIGHT_KEYWORD),
-        (vector_search(conn, question, chat_id, pool, time_range), config.WEIGHT_VECTOR),
+        (vec_ranking, config.WEIGHT_VECTOR),
     ]
 
     fused: dict[int, float] = {}
@@ -296,6 +345,9 @@ def search(
                 speakers=r["speakers"] or "",
                 text=r["text"],
                 score=score,
+                cosine=cosine.get(window_id, 0.0),
             )
         )
+    if not explicit_k:
+        hits = cap_hits(hits)
     return hits

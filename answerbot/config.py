@@ -52,6 +52,14 @@ WEIGHT_KEYWORD = float(os.getenv("WEIGHT_KEYWORD", "0.7"))
 # Query terms appearing in more than this fraction of messages are treated as
 # stopwords and dropped from the keyword query.
 STOPWORD_DF_RATIO = float(os.getenv("STOPWORD_DF_RATIO", "0.25"))
+# Fusion still ranks TOP_K windows; the LLM only sees a prefix of that list.
+# Always keep MIN_K, then stop at the first hit whose cosine is below COSINE_MIN,
+# never more than MAX_K. COSINE_MIN=0 disables the cutoff (always send MAX_K).
+MIN_K = int(os.getenv("MIN_K", "3"))
+MAX_K = int(os.getenv("MAX_K", "5"))
+COSINE_MIN = float(os.getenv("COSINE_MIN", "0.7"))
+# Intra-op threads for the local embedding model. 1 keeps a small VPS usable.
+EMBED_THREADS = int(os.getenv("EMBED_THREADS", "1"))
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "claude")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
