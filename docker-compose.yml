@@ -2,7 +2,10 @@ name: answer-chat-history-bot
 
 services:
   bot:
-    build: .
+    build:
+      context: .
+      secrets:
+        - HF_TOKEN
     init: true
     restart: unless-stopped
     stop_grace_period: 20s
@@ -17,3 +20,7 @@ services:
       - ./data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+secrets:
+  HF_TOKEN:
+    environment: HF_TOKEN

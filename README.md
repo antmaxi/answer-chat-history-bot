@@ -19,7 +19,9 @@ python3 -m venv .venv
 
 Optional. Same single-process app, with CPU torch and the default embed model
 already in the image — useful for running the bot without a venv. Copy
-`.env.example` to `.env` and fill in the keys you need first.
+`.env.example` to `.env` and fill in the keys you need first. Set `HF_TOKEN`
+there before `docker compose build` if Hub rate-limits anonymous downloads or
+the embed model is gated.
 
 ```bash
 mkdir -p data
@@ -219,7 +221,7 @@ and fill in the keys you need. Values are read once at startup from
 
 ### Embeddings
 
-Local, no API key. A full `index` is required after changing these.
+Local. A full `index` is required after changing the model or dimension.
 
 - **`EMBED_MODEL`** (`intfloat/multilingual-e5-small`) — sentence-transformers
   model used to embed windows and queries.
@@ -227,6 +229,10 @@ Local, no API key. A full `index` is required after changing these.
   model; wrong values make search silently useless.
 - **`EMBED_THREADS`** (`1`) — CPU threads for the local embedding model.
   The bot also warms the model at startup so the first question is not the stall.
+- **`HF_TOKEN`** — Hugging Face access token for pulling the embed model
+  (gated repos, or Hub rate limits). Also accepted as `HUGGING_FACE_HUB_TOKEN`.
+  Used at image build (`docker compose build`) and whenever a model is loaded
+  that is not already in the cache.
 
 ### Windowing
 

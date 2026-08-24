@@ -21,6 +21,8 @@ else:
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-small")
 EMBED_DIM = int(os.getenv("EMBED_DIM", "384"))
+# Optional Hub token for gated embed models and anonymous download rate limits.
+HF_TOKEN = (os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN") or "").strip() or None
 
 # Windowing: a new conversation window starts when the gap between consecutive
 # messages exceeds GAP, or the current window grows past MAX_MSGS / MAX_CHARS.

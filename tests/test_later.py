@@ -998,3 +998,56 @@ class TestLogconfig:
             logconfig.asyncio_handler(None, {"message": "Task exception", "exception": exc})
         assert "Task exception" in caplog.text
         assert "loop boom" in caplog.text
+
+
+class TestEmbedToken:
+    def teardown_method(self):
+        from answerbot import embed
+
+        embed._model = None
+
+    def _stub_sentence_transformer(self, monkeypatch, captured):
+        import types
+
+        torch = types.ModuleType("torch")
+        torch.set_num_threads = lambda n: None
+        torch.set_num_interop_threads = lambda n: None
+
+        st = types.ModuleType("sentence_transformers")
+
+        class SentenceTransformer:
+            def __init__(self, name, token=None):
+                captured["name"] = name
+                captured["token"] = token
+
+        st.SentenceTransformer = SentenceTransformer
+        monkeypatch.setitem(sys.modules, "torch", torch)
+        monkeypatch.setitem(sys.modules, "sentence_transformers", st)
+
+    def test_passes_hf_token(self, monkeypatch):
+        from answerbot import embed
+
+        captured = {}
+        self._stub_sentence_transformer(monkeypatch, captured)
+        monkeypatch.setattr(config, "HF_TOKEN", "hf_secret")
+        monkeypatch.setattr(config, "EMBED_MODEL", "org/gated-model")
+        embed._model = None
+
+        model = embed._get_model()
+        assert captured == {"name": "org/gated-model", "token": "hf_secret"}
+        assert model is embed._model
+
+    def test_loads_without_token(self, monkeypatch):
+        from answerbot import embed
+
+        captured = {}
+        self._stub_sentence_transformer(monkeypatch, captured)
+        monkeypatch.setattr(config, "HF_TOKEN", None)
+        monkeypatch.setattr(config, "EMBED_MODEL", "intfloat/multilingual-e5-small")
+        embed._model = None
+
+        embed._get_model()
+        assert captured == {
+            "name": "intfloat/multilingual-e5-small",
+            "token": None,
+        }

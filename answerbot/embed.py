@@ -37,7 +37,7 @@ def _get_model():
             torch.set_num_interop_threads(1)
         except RuntimeError:
             pass
-        _model = SentenceTransformer(config.EMBED_MODEL)
+        _model = SentenceTransformer(config.EMBED_MODEL, token=config.HF_TOKEN)
     return _model
 
 

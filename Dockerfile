@@ -40,9 +40,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && cursor-sdk-bridge --help >/dev/null
 
 # Default embed model, so the first `index` is not a surprise Hub download.
+# Optional HF_TOKEN secret authenticates gated models and Hub rate limits.
+# Empty/missing secret is ignored so anonymous pulls still work.
 # chown here (not after COPY of app code) so a source change does not re-walk
 # the snapshot.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')" \
+RUN --mount=type=secret,id=HF_TOKEN,required=false \
+    python -c "from pathlib import Path; from sentence_transformers import SentenceTransformer; p=Path('/run/secrets/HF_TOKEN'); t=p.read_text().strip() if p.is_file() else ''; SentenceTransformer('intfloat/multilingual-e5-small', token=t or None)" \
     && chown -R answerbot:answerbot /opt/hf
 
 COPY answerbot ./answerbot
