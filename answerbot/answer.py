@@ -94,7 +94,15 @@ def complete_answer(question: str, hits: list[retrieve.Hit], llm: LLM | None = N
     return Answer(text, hits)
 
 
-def _record(conn: sqlite3.Connection, question: str, chat_id, result: Answer, t0: float, llm: LLM | None) -> None:
+def _record(
+    conn: sqlite3.Connection,
+    question: str,
+    chat_id,
+    result: Answer,
+    t0: float,
+    llm: LLM | None,
+    user_id: int | None = None,
+) -> None:
     db.log_query(
         conn,
         question=question,
@@ -103,6 +111,7 @@ def _record(conn: sqlite3.Connection, question: str, chat_id, result: Answer, t0
         cited_ids=[h.window_id for h in result.cited_hits()],
         latency_ms=int((time.monotonic() - t0) * 1000),
         model=getattr(llm, "model", None) or config.ANSWER_MODEL,
+        user_id=user_id,
     )
 
 

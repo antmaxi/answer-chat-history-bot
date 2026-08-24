@@ -205,6 +205,9 @@ class TestSchemaMigrate:
         assert empty["messages"] == 0
         assert empty["first_message"] is None
         assert empty["last_message"] is None
+        assert empty["questions_day"] == 0
+        assert empty["questions_week"] == 0
+        assert empty["questions_month"] == 0
         conn.execute(
             "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 1, 1700000000, 'A', 'old')"
         )
@@ -215,6 +218,55 @@ class TestSchemaMigrate:
         assert s["messages"] == 2
         assert s["first_message"] == "2023-11-14 22:13 UTC"
         assert s["last_message"] == "2023-11-14 23:13 UTC"
+
+    def test_stats_counts_questions_in_rolling_windows(self, conn):
+        now = 1_800_000_000
+        rows = [
+            (now - 3600, "today"),
+            (now - 2 * 86400, "this week"),
+            (now - 10 * 86400, "this month"),
+            (now - 40 * 86400, "older"),
+        ]
+        conn.executemany(
+            "INSERT INTO query_log (ts, question, window_ids, cited_ids) VALUES (?, ?, '[]', '[]')",
+            rows,
+        )
+        conn.commit()
+        s = db.stats(conn, now=now)
+        assert s["questions_day"] == 1
+        assert s["questions_week"] == 2
+        assert s["questions_month"] == 3
+        assert s["questions_day_admin"] == 0
+        assert s["questions_day_other"] == 1
+        assert s["questions_week_other"] == 2
+        assert s["questions_month_other"] == 3
+
+    def test_stats_splits_questions_by_admin(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "ADMIN_USER_IDS", {10, 20})
+        now = 1_800_000_000
+        rows = [
+            (now - 3600, "admin today", 10),
+            (now - 3600, "other today", 99),
+            (now - 2 * 86400, "admin this week", 20),
+            (now - 10 * 86400, "other this month", 99),
+            (now - 10 * 86400, "no user", None),
+        ]
+        conn.executemany(
+            "INSERT INTO query_log (ts, question, window_ids, cited_ids, user_id) "
+            "VALUES (?, ?, '[]', '[]', ?)",
+            rows,
+        )
+        conn.commit()
+        s = db.stats(conn, now=now)
+        assert s["questions_day"] == 2
+        assert s["questions_day_admin"] == 1
+        assert s["questions_day_other"] == 1
+        assert s["questions_week"] == 3
+        assert s["questions_week_admin"] == 2
+        assert s["questions_week_other"] == 1
+        assert s["questions_month"] == 5
+        assert s["questions_month_admin"] == 2
+        assert s["questions_month_other"] == 3
 
 
 class TestChatIdAlign:

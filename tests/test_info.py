@@ -123,3 +123,47 @@ class TestFormatInfo:
         )
         assert "messages: 0" in text
         assert "first:" not in text
+        assert "questions:" not in text
+
+    def test_format_stats_includes_question_counts_when_requested(self):
+        s = {
+            "messages": 0,
+            "windows": 0,
+            "embedded": 0,
+            "chats": 0,
+            "questions_day": 2,
+            "questions_day_admin": 1,
+            "questions_day_other": 1,
+            "questions_week": 5,
+            "questions_week_admin": 1,
+            "questions_week_other": 4,
+            "questions_month": 9,
+            "questions_month_admin": 2,
+            "questions_month_other": 7,
+        }
+        text = format_stats(s, "en", questions=True)
+        assert "questions:" in text
+        assert "last day: 2 (admin: 1, others: 1)" in text
+        assert "last week: 5 (admin: 1, others: 4)" in text
+        assert "last month: 9 (admin: 2, others: 7)" in text
+        ru = format_stats(s, "ru", questions=True)
+        assert "вопросов:" in ru
+        assert "за сутки: 2 (админы: 1, остальные: 1)" in ru
+        assert "за неделю: 5 (админы: 1, остальные: 4)" in ru
+        assert "за месяц: 9 (админы: 2, остальные: 7)" in ru
+
+    def test_format_info_omits_question_counts(self, monkeypatch):
+        monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
+        s = {
+            "messages": 10,
+            "windows": 3,
+            "embedded": 3,
+            "chats": 1,
+            "questions_day": 2,
+            "questions_week": 5,
+            "questions_month": 9,
+        }
+        text = format_info("2026-04-04 14:00:00 UTC+02:00", "en", stats=s)
+        assert "messages: 10" in text
+        assert "questions:" not in text
+        assert "last day:" not in text

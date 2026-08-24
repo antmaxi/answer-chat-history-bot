@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS query_log (
   window_ids  TEXT NOT NULL,
   cited_ids   TEXT NOT NULL,
   latency_ms  INTEGER,
-  model       TEXT
+  model       TEXT,
+  user_id     INTEGER
 );
 
 -- Per-user UI language (ru/en). Missing row means the default (Russian).
@@ -154,7 +155,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     New tables go in SCHEMA. New columns on existing tables go here via
     ensure_column, so a DB created on an older commit still opens.
     """
-    return
+    ensure_column(conn, "query_log", "user_id", "INTEGER")
 
 
 def _iso_utc(ts: int | None) -> str | None:
@@ -163,12 +164,64 @@ def _iso_utc(ts: int | None) -> str | None:
     return datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def stats(conn: sqlite3.Connection) -> dict:
-    """Row counts and the indexed message span, for the CLI and /info."""
+def _admin_predicate(admin_ids: set[int] | frozenset[int]) -> tuple[str, tuple[int, ...]]:
+    """SQL fragment matching query_log rows asked by current admins.
+
+    Empty admin set → never matches (all questions count as others).
+    """
+    ids = tuple(sorted(int(x) for x in admin_ids))
+    if not ids:
+        return "0", ()
+    placeholders = ",".join("?" * len(ids))
+    return f"user_id IN ({placeholders})", ids
+
+
+def _question_windows(conn: sqlite3.Connection, now_ts: int) -> dict[str, int]:
+    """Rolling 24h / 7d / 30d question counts, split by current ADMIN_USER_IDS."""
+    cuts = (now_ts - 86400, now_ts - 7 * 86400, now_ts - 30 * 86400)
+    admin_pred, admin_params = _admin_predicate(config.ADMIN_USER_IDS)
+    row = conn.execute(
+        f"""SELECT
+              COUNT(*) FILTER (WHERE ts >= ?),
+              COUNT(*) FILTER (WHERE ts >= ? AND {admin_pred}),
+              COUNT(*) FILTER (WHERE ts >= ?),
+              COUNT(*) FILTER (WHERE ts >= ? AND {admin_pred}),
+              COUNT(*) FILTER (WHERE ts >= ?),
+              COUNT(*) FILTER (WHERE ts >= ? AND {admin_pred})
+            FROM query_log""",
+        (
+            cuts[0], cuts[0], *admin_params,
+            cuts[1], cuts[1], *admin_params,
+            cuts[2], cuts[2], *admin_params,
+        ),
+    ).fetchone()
+    day, day_admin, week, week_admin, month, month_admin = (int(n or 0) for n in row)
+    return {
+        "questions_day": day,
+        "questions_day_admin": day_admin,
+        "questions_day_other": day - day_admin,
+        "questions_week": week,
+        "questions_week_admin": week_admin,
+        "questions_week_other": week - week_admin,
+        "questions_month": month,
+        "questions_month_admin": month_admin,
+        "questions_month_other": month - month_admin,
+    }
+
+
+def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
+    """Row counts, indexed message span, and asked-question windows.
+
+    Question counts are rolling: last 24h / 7d / 30d from `now` (unix seconds).
+    They come from query_log, so they are 0 when QUERY_LOG has always been off.
+    Admin vs others uses the current ADMIN_USER_IDS; rows with no user_id
+    (CLI / logs from before that column) count as others.
+    """
     def count(table: str) -> int:
         return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
     first_ts, last_ts = conn.execute("SELECT MIN(ts), MAX(ts) FROM messages").fetchone()
+    now_ts = int(time.time() if now is None else now)
     return {
         "messages": count("messages"),
         "windows": count("windows"),
@@ -176,6 +229,7 @@ def stats(conn: sqlite3.Connection) -> dict:
         "chats": count("(SELECT DISTINCT chat_id FROM messages)"),
         "first_message": _iso_utc(first_ts),
         "last_message": _iso_utc(last_ts),
+        **_question_windows(conn, now_ts),
     }
 
 
@@ -188,13 +242,15 @@ def log_query(
     cited_ids: list[int],
     latency_ms: int,
     model: str | None,
+    user_id: int | None = None,
 ) -> None:
     """Append one answered question. No-op when QUERY_LOG is off."""
     if not config.QUERY_LOG:
         return
     conn.execute(
-        """INSERT INTO query_log (ts, question, chat_ids, window_ids, cited_ids, latency_ms, model)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO query_log
+           (ts, question, chat_ids, window_ids, cited_ids, latency_ms, model, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             int(time.time()),
             question,
@@ -203,6 +259,7 @@ def log_query(
             json.dumps(cited_ids),
             latency_ms,
             model,
+            user_id,
         ),
     )
     conn.commit()

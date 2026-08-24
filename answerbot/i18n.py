@@ -17,7 +17,7 @@ COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
         ("ask", "Задать вопрос"),
         ("cancel", "Отменить поиск"),
         ("settings", "⚙️ Настройки"),
-        ("stats", "Размер индекса"),
+        ("stats", "Индекс и вопросы"),
         ("reindex", "Обновить индекс"),
         ("resolve", "Имена участников"),
         ("info", "ℹ️ О боте"),
@@ -27,7 +27,7 @@ COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
         ("ask", "Ask a question"),
         ("cancel", "Stop the current search"),
         ("settings", "⚙️ Settings"),
-        ("stats", "Index size"),
+        ("stats", "Index and questions"),
         ("reindex", "Rebuild recent index"),
         ("resolve", "Fix member names"),
         ("info", "ℹ️ About the bot"),
@@ -71,6 +71,12 @@ T: dict[str, dict[str, str]] = {
             "embedded: {embedded}\nchats: {chats}"
         ),
         "stats_span": "\nfirst: {first}\nlast: {last}",
+        "stats_queries": (
+            "\n\nquestions:\n"
+            "last day: {day} (admin: {day_admin}, others: {day_other})\n"
+            "last week: {week} (admin: {week_admin}, others: {week_other})\n"
+            "last month: {month} (admin: {month_admin}, others: {month_other})"
+        ),
         "bot_up": (
             "Bot is up\n{db}: {messages} messages, {windows} windows{span}\n"
             "chat: {title} (`{chat_id}`)"
@@ -125,6 +131,12 @@ T: dict[str, dict[str, str]] = {
             "с эмбеддингами: {embedded}\nчатов: {chats}"
         ),
         "stats_span": "\nпервое: {first}\nпоследнее: {last}",
+        "stats_queries": (
+            "\n\nвопросов:\n"
+            "за сутки: {day} (админы: {day_admin}, остальные: {day_other})\n"
+            "за неделю: {week} (админы: {week_admin}, остальные: {week_other})\n"
+            "за месяц: {month} (админы: {month_admin}, остальные: {month_other})"
+        ),
         "bot_up": (
             "Бот запущен\n{db}: {messages} сообщений, {windows} окон{span}\n"
             "чат: {title} (`{chat_id}`)"

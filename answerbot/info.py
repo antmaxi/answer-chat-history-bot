@@ -62,13 +62,13 @@ def last_update() -> str:
         return "unknown"
 
 
-def format_stats(s: dict, lang: str | None = None) -> str:
+def format_stats(s: dict, lang: str | None = None, *, questions: bool = False) -> str:
     lang = i18n.normalize_lang(lang)
     first, last = s.get("first_message"), s.get("last_message")
     span = ""
     if first and last:
         span = i18n.t(lang, "stats_span", first=first, last=last)
-    return (
+    text = (
         i18n.t(
             lang,
             "stats",
@@ -79,6 +79,21 @@ def format_stats(s: dict, lang: str | None = None) -> str:
         )
         + span
     )
+    if questions:
+        text += i18n.t(
+            lang,
+            "stats_queries",
+            day=s.get("questions_day", 0),
+            day_admin=s.get("questions_day_admin", 0),
+            day_other=s.get("questions_day_other", 0),
+            week=s.get("questions_week", 0),
+            week_admin=s.get("questions_week_admin", 0),
+            week_other=s.get("questions_week_other", 0),
+            month=s.get("questions_month", 0),
+            month_admin=s.get("questions_month_admin", 0),
+            month_other=s.get("questions_month_other", 0),
+        )
+    return text
 
 
 def format_info(updated: str, lang: str | None = None, stats: dict | None = None) -> str:

@@ -493,7 +493,7 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
             return answer.complete_answer(question, hits)
 
         result = await asyncio.to_thread(complete)
-        await _db(answer._record, conn, question, chat_id, result, t0, None)
+        await _db(answer._record, conn, question, chat_id, result, t0, None, user_id or None)
         _history[key].append(question)
         await _stop_thinking(stop, spinner)
         spinner = None
@@ -629,11 +629,11 @@ async def cmd_stats(message: Message, bot: Bot) -> None:
         return
     _cancel_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
-    if message.from_user.id not in config.ADMIN_USER_IDS:
+    if not message.from_user or message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply(i18n.t(lang, "admins_only"))
         return
     s = await _db(db.stats, conn)
-    await message.reply(format_stats(s, lang))
+    await message.reply(format_stats(s, lang, questions=True))
 
 
 @dp.message(Command("reindex"))
