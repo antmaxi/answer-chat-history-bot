@@ -159,9 +159,13 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 
 def _iso_utc(ts: int | None) -> str | None:
+    """Format a unix timestamp in the same display timezone as /info."""
     if ts is None:
         return None
-    return datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    tz = config.display_timezone()
+    local = datetime.fromtimestamp(int(ts), timezone.utc).astimezone(tz)
+    off = local.strftime("%z")
+    return local.strftime("%Y-%m-%d %H:%M:%S") + f" UTC{off[:3]}:{off[3:5]}"
 
 
 def _admin_predicate(admin_ids: set[int] | frozenset[int]) -> tuple[str, tuple[int, ...]]:

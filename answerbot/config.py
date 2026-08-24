@@ -136,7 +136,7 @@ def _display_utc_offset_hours() -> int:
     return hours
 
 
-# Wall-clock times in bot messages (e.g. /info) use this UTC offset.
+# Wall-clock times in bot messages (e.g. /info, /stats) use this UTC offset.
 DISPLAY_UTC_OFFSET_HOURS = _display_utc_offset_hours()
 
 

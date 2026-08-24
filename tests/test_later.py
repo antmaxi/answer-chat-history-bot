@@ -200,7 +200,8 @@ class TestSchemaMigrate:
         assert "aliases" in tables
         assert "user_prefs" in tables
 
-    def test_stats_includes_message_span(self, conn):
+    def test_stats_includes_message_span(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "DISPLAY_UTC_OFFSET_HOURS", 2)
         empty = db.stats(conn)
         assert empty["messages"] == 0
         assert empty["first_message"] is None
@@ -216,8 +217,17 @@ class TestSchemaMigrate:
         )
         s = db.stats(conn)
         assert s["messages"] == 2
-        assert s["first_message"] == "2023-11-14 22:13 UTC"
-        assert s["last_message"] == "2023-11-14 23:13 UTC"
+        assert s["first_message"] == "2023-11-15 00:13:20 UTC+02:00"
+        assert s["last_message"] == "2023-11-15 01:13:20 UTC+02:00"
+
+    def test_stats_span_uses_display_timezone(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "DISPLAY_UTC_OFFSET_HOURS", 0)
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 1, 1700000000, 'A', 'old')"
+        )
+        s = db.stats(conn)
+        assert s["first_message"] == "2023-11-14 22:13:20 UTC+00:00"
+        assert s["last_message"] == "2023-11-14 22:13:20 UTC+00:00"
 
     def test_stats_counts_questions_in_rolling_windows(self, conn):
         now = 1_800_000_000

@@ -333,7 +333,7 @@ setup.
 - **`GITHUB_REPO`** (`https://github.com/antmaxi/answer-chat-history-bot`)
   — source-code URL shown by `/info`.
 - **`DISPLAY_UTC_OFFSET_HOURS`** (`2`) — UTC offset for wall-clock times
-  in `/info` (default UTC+2). Valid range is −12 to 14.
+  in `/info` and `/stats` (default UTC+2). Valid range is −12 to 14.
 - **`LIVE_REINDEX_EVERY`** (`20`) — new messages that may accumulate before
   the open tail is re-windowed.
 - **`LIVE_LOOKBACK_HOURS`** (`6`) — how often to rebuild the last
