@@ -1,6 +1,7 @@
 """SQLite storage: schema, connection helper, and the FTS triggers."""
 
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -8,6 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, i18n
+
+log = logging.getLogger("answerbot")
+
+_CORRUPT_HINTS = ("malformed", "not a database")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -113,21 +118,121 @@ def connect(path: Path | str | None = None, check_same_thread: bool = True) -> s
     The bot runs DB work in a thread pool (via asyncio.to_thread), so it opens
     with check_same_thread=False and serializes access with its own lock — see
     bot.py. Single-threaded callers (the CLIs) keep the default guard.
+
+    WAL leftovers from a killed writer can make the next open fail with
+    "database disk image is malformed". One retry drops -wal/-shm/-journal
+    (uncheckpointed writes are lost) and reopens; if WAL still cannot start,
+    DELETE journal mode is used instead.
     """
-    db_path = Path(path or config.DB_PATH)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path = _resolve_path(path)
+    is_memory = db_path == ":memory:"
+    if not is_memory:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    conn = None
     try:
-        conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
+        conn = _open(db_path, check_same_thread)
+        _configure(conn, wal=True)
+    except sqlite3.DatabaseError as e:
+        if conn is not None:
+            conn.close()
+            conn = None
+        if is_memory or not _looks_corrupt(e):
+            raise
+        n = _discard_sidecars(Path(db_path))
+        log.warning(
+            "sqlite %s: %s; dropped %s WAL/journal sidecar(s) and retrying",
+            db_path, e, n,
+        )
+        try:
+            conn = _open(db_path, check_same_thread)
+            _configure(conn, wal=True)
+        except sqlite3.DatabaseError as e2:
+            if conn is None:
+                raise _corrupt_error(db_path, e2) from e2
+            try:
+                _configure(conn, wal=False)
+            except sqlite3.DatabaseError as e3:
+                conn.close()
+                raise _corrupt_error(db_path, e3) from e3
+            log.warning(
+                "sqlite %s could not enable WAL (%s); using DELETE journal",
+                db_path, e2,
+            )
+
+    assert conn is not None
+    conn.executescript(SCHEMA)
+    migrate(conn)
+    return conn
+
+
+def checkpoint(conn: sqlite3.Connection) -> None:
+    """Flush the WAL into the main file so a restart does not have to replay it."""
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.Error:
+        pass
+
+
+def _resolve_path(path: Path | str | None) -> Path | str:
+    if path is None:
+        return Path(config.DB_PATH)
+    if str(path) == ":memory:":
+        return ":memory:"
+    return Path(path)
+
+
+def _looks_corrupt(err: BaseException) -> bool:
+    msg = str(err).lower()
+    return any(h in msg for h in _CORRUPT_HINTS)
+
+
+def _corrupt_error(db_path: Path | str, err: BaseException) -> sqlite3.DatabaseError:
+    return sqlite3.DatabaseError(
+        f"{db_path} is corrupted ({err}). Stop every process using this file "
+        f"(docker compose stop), then restore a copy or re-run ingest and index."
+    )
+
+
+def _sidecar_paths(db_path: Path) -> tuple[Path, Path, Path]:
+    name = db_path.name
+    parent = db_path.parent
+    return (
+        parent / f"{name}-wal",
+        parent / f"{name}-shm",
+        parent / f"{name}-journal",
+    )
+
+
+def _discard_sidecars(db_path: Path) -> int:
+    """Remove WAL/SHM/journal leftovers. Returns how many files were deleted."""
+    n = 0
+    for side in _sidecar_paths(db_path):
+        if side.exists():
+            side.unlink()
+            n += 1
+    return n
+
+
+def _open(db_path: Path | str, check_same_thread: bool) -> sqlite3.Connection:
+    try:
+        conn = sqlite3.connect(
+            db_path, check_same_thread=check_same_thread, timeout=30
+        )
     except sqlite3.OperationalError as e:
+        if _looks_corrupt(e):
+            raise
         raise sqlite3.OperationalError(
             f"cannot open {db_path} ({e}); is the directory writable?"
         ) from e
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.executescript(SCHEMA)
-    migrate(conn)
     return conn
+
+
+def _configure(conn: sqlite3.Connection, *, wal: bool) -> None:
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute(f"PRAGMA journal_mode={'WAL' if wal else 'DELETE'}")
+    conn.execute("PRAGMA foreign_keys=ON")
 
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

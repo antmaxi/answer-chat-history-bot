@@ -690,3 +690,42 @@ class TestCapHits:
         # skipping it returns every fused window, even past MAX_K=2.
         assert len(hits) == 3
         assert len(retrieve.search(conn, "m1", chat_id=1)) == 1
+
+
+class TestConnect:
+    def test_checkpoint_on_memory_is_a_no_op(self, conn):
+        db.checkpoint(conn)
+
+    def test_file_open_roundtrip(self, tmp_path):
+        path = tmp_path / "chat.db"
+        conn = db.connect(path)
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 1, 1, 'A', 'hi')"
+        )
+        conn.commit()
+        db.checkpoint(conn)
+        conn.close()
+        conn = db.connect(path)
+        assert conn.execute("SELECT text FROM messages").fetchone()[0] == "hi"
+        conn.close()
+
+    def test_garbage_wal_is_dropped(self, tmp_path):
+        path = tmp_path / "chat.db"
+        conn = db.connect(path)
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 1, 1, 'A', 'hi')"
+        )
+        conn.commit()
+        db.checkpoint(conn)
+        conn.close()
+        (tmp_path / "chat.db-wal").write_bytes(b"not a wal" * 200)
+        (tmp_path / "chat.db-shm").write_bytes(b"\x00" * 32)
+        conn = db.connect(path)
+        assert conn.execute("SELECT text FROM messages").fetchone()[0] == "hi"
+        conn.close()
+
+    def test_junk_file_names_the_path(self, tmp_path):
+        path = tmp_path / "chat.db"
+        path.write_bytes(b"not a sqlite database")
+        with pytest.raises(sqlite3.DatabaseError, match="chat.db"):
+            db.connect(path)

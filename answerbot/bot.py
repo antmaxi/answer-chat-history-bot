@@ -856,6 +856,7 @@ async def _on_shutdown(bot: Bot) -> None:
     log.info("bot is down")
     await _notify_status(bot, "bot_down")
     _admin_errors.detach()
+    await _db(db.checkpoint, conn)
 
 
 dp.startup.register(_on_startup)
