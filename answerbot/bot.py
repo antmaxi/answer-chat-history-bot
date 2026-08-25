@@ -10,7 +10,6 @@ that group. Search always runs against `TELEGRAM_CHAT_ID`.
 
 import asyncio
 import logging
-import re
 import threading
 import time
 
@@ -322,17 +321,8 @@ async def _ensure_member_callback(query: CallbackQuery, bot: Bot) -> bool:
 
 
 def format_answer(result: answer.Answer, lang: str) -> str:
-    # Quote first (brackets survive escaping), then turn each [W#] into a link to
-    # the relevant messages, so the citations in the answer are clickable.
-    body = html.quote(result.text)
-
-    def linkify(m: "re.Match") -> str:
-        i = int(m.group(1))
-        if 1 <= i <= len(result.hits):
-            return f'<a href="{result.hits[i - 1].link()}">[W{i}]</a>'
-        return m.group(0)
-
-    body = answer.CITATION.sub(linkify, body)
+    # Markdown → Telegram HTML, then [W#] → t.me links (brackets survive escaping).
+    body = answer.format_answer_body(result)
 
     # A direct jump to the first message the answer is grounded in.
     link = result.primary_link()

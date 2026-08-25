@@ -5,6 +5,7 @@ excerpts, and say so plainly when the history doesn't contain the answer. A bot
 that guesses is one people mute after a week.
 """
 
+import html as html_lib
 import re
 import sqlite3
 import time
@@ -19,12 +20,27 @@ SYSTEM = """You answer questions about a group chat, using ONLY the excerpts pro
 Rules:
 - Base every claim strictly on the excerpts. Never use outside knowledge or guess.
 - If the excerpts don't contain the answer, say exactly: "I couldn't find that in the chat history." Do not speculate.
-- Cite the excerpts you used with their [W#] tags, e.g. "You each owe 200 lari [W2]."
+- Cite the excerpts you used with their [W#] tags, e.g. "You each owe 200 lari [W2]." Do not add URLs; the client turns [W#] into links.
+- Format the answer in Markdown: **bold** for names, products, and constraints; *italic* for light emphasis; `code` for exact values or identifiers; hyphen bullets (`- `) when a list is clearer than a paragraph. Do not wrap the whole answer in a fenced code block. Do not use headings or images.
 - Quote sparingly; prefer to summarize. Keep the answer to a few sentences.
 - When excerpts disagree, prefer the more recent ones unless the question is about an earlier period.
 - Answer in the same language as the question."""
 
 CITATION = re.compile(r"\[W(\d+)\]")
+# [W3], [W3](url), or [W3] (url) — models sometimes emit a markdown/parenthetical link.
+CITATION_MARKUP = re.compile(r"\[W(\d+)\](?:\s*\(\s*https?://[^)]+\s*\))?")
+
+_OUTER_FENCE = re.compile(
+    r"\A\s*```(?:markdown|md)?\s*\n(.*)\n```\s*\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+_FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^\s)\"<>]+)\)")
+_BOLD = re.compile(r"\*\*(?!\s)(.+?)(?<!\s)\*\*")
+# Opening * must not start a list item (`* foo`). No newlines, so list markers stay put.
+_ITALIC = re.compile(r"(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)")
+_SLOT = "\x00{}\x00"
 
 
 @dataclass
@@ -75,6 +91,57 @@ class Answer:
         """Deep link to the first message the answer is grounded in."""
         hit = self.primary_source()
         return hit.link() if hit else None
+
+
+def markdown_to_html(text: str) -> str:
+    """Render a CommonMark subset as Telegram HTML.
+
+    Escapes first so raw tags in the model output cannot inject markup, then
+    converts **bold**, *italic*, `code`, fenced blocks, and [text](url) links.
+    [W#] citations are left for linkify_citations.
+    """
+    m = _OUTER_FENCE.fullmatch(text)
+    if m:
+        text = m.group(1)
+    text = html_lib.escape(text, quote=False)
+    slots: list[str] = []
+
+    def hold(fragment: str) -> str:
+        slots.append(fragment)
+        return _SLOT.format(len(slots) - 1)
+
+    text = _FENCE.sub(lambda m: hold(f"<pre>{m.group(1)}</pre>"), text)
+    text = _INLINE_CODE.sub(lambda m: hold(f"<code>{m.group(1)}</code>"), text)
+
+    def link(m: re.Match) -> str:
+        label, url = m.group(1), m.group(2)
+        if re.fullmatch(r"W\d+", label):
+            return m.group(0)
+        return f'<a href="{url}">{label}</a>'
+
+    text = _LINK.sub(link, text)
+    text = _BOLD.sub(r"<b>\1</b>", text)
+    text = _ITALIC.sub(r"<i>\1</i>", text)
+    for i, fragment in enumerate(slots):
+        text = text.replace(_SLOT.format(i), fragment)
+    return text
+
+
+def linkify_citations(text: str, hits: list[retrieve.Hit]) -> str:
+    """Turn [W#] (and a trailing markdown/parenthetical URL, if any) into source links."""
+
+    def repl(m: re.Match) -> str:
+        i = int(m.group(1))
+        if 1 <= i <= len(hits):
+            return f'<a href="{hits[i - 1].link()}">[W{i}]</a>'
+        return m.group(0)
+
+    return CITATION_MARKUP.sub(repl, text)
+
+
+def format_answer_body(result: Answer) -> str:
+    """LLM Markdown as Telegram HTML, with [W#] turned into t.me links."""
+    return linkify_citations(markdown_to_html(result.text), result.hits)
 
 
 def build_context(hits: list[retrieve.Hit]) -> str:

@@ -12,7 +12,13 @@ import pytest
 
 from answerbot import config, db, index, people, retrieve
 from answerbot.timerange import TimeRange
-from answerbot.answer import Answer, answer as run_answer
+from answerbot.answer import (
+    Answer,
+    SYSTEM,
+    answer as run_answer,
+    format_answer_body,
+    markdown_to_html,
+)
 from answerbot.index import build_windows, render
 from answerbot.ingest import live
 from answerbot.ingest.export import flatten_text, parse_sender_id, parse_ts
@@ -213,6 +219,55 @@ class TestAnswerCitations:
         assert b.primary_link() == hit(5).link()
         # nothing retrieved: no link
         assert Answer("I couldn't find that.", []).primary_link() is None
+
+
+class TestAnswerMarkdown:
+    def test_prompt_asks_for_markdown(self):
+        assert "Markdown" in SYSTEM
+        assert "**bold**" in SYSTEM
+
+    def test_bold_and_citations_render_as_telegram_html(self):
+        text = (
+            "По переписке **без пермита** чаще всего советуют не «полноценные» "
+            "швейцарские банки, а **Revolut и Wise** — в т.ч. по фото визы, "
+            "пока ждёте пермит [W3]. У **Revolut** есть ограничение: не откроют, "
+            "если срок визы **from–until меньше 90 дней**, даже с регистрацией [W3]."
+        )
+        body = format_answer_body(Answer(text, [hit(1), hit(2), hit(3)]))
+        assert "<b>без пермита</b>" in body
+        assert "<b>Revolut и Wise</b>" in body
+        assert "<b>from–until меньше 90 дней</b>" in body
+        assert f'<a href="{hit(3).link()}">[W3]</a>' in body
+        assert "**" not in body
+
+    def test_parenthetical_citation_url_is_replaced_with_source_link(self):
+        text = "advice [W3] (https://evil.example/x) and [W2](https://evil.example/y)"
+        body = format_answer_body(Answer(text, [hit(1), hit(2), hit(3)]))
+        assert "evil.example" not in body
+        assert f'<a href="{hit(3).link()}">[W3]</a>' in body
+        assert f'<a href="{hit(2).link()}">[W2]</a>' in body
+
+    def test_markdown_link_and_code_and_italic(self):
+        html = markdown_to_html("see [Revolut](https://revolut.com) and `IBAN` vs *maybe*")
+        assert '<a href="https://revolut.com">Revolut</a>' in html
+        assert "<code>IBAN</code>" in html
+        assert "<i>maybe</i>" in html
+
+    def test_raw_html_is_escaped(self):
+        html = markdown_to_html("use <b>tags</b> & **this**")
+        assert "&lt;b&gt;tags&lt;/b&gt;" in html
+        assert "<b>this</b>" in html
+
+    def test_star_lists_are_not_italic(self):
+        html = markdown_to_html("* Revolut\n* Wise")
+        assert "<i>" not in html
+        assert "* Revolut" in html
+
+    def test_outer_markdown_fence_is_unwrapped(self):
+        html = markdown_to_html("```markdown\n**ok** [W1]\n```")
+        assert "<b>ok</b>" in html
+        assert "<pre>" not in html
+        assert "[W1]" in html
 
 
 class TestLiveIngest:

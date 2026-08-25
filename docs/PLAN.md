@@ -169,8 +169,10 @@ user strings into one agent prompt and disables tools so the run can only
 return text.
 
 Prompt rule: answers come **only** from the supplied excerpts. “I couldn't find
-this in the history” is a valid answer. Context blocks carry `[W3] 2026-03-14,
-Anna & Nino:` headers; the bot turns `[W3]` into `t.me/c/<chat>/<msg_id>` links.
+this in the history” is a valid answer. The model writes **Markdown** (`**bold**`,
+lists, `` `code` ``); the bot renders that subset as Telegram HTML. Context
+blocks carry `[W3] 2026-03-14, Anna & Nino:` headers; the bot turns `[W3]` into
+`t.me/c/<chat>/<msg_id>` links.
 
 ## Bot behaviour
 
