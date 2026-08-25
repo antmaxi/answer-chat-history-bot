@@ -237,6 +237,17 @@ def vector_search(
     return [ids[i] for i in top]
 
 
+def recency_weight(ts_end: int, now_ts: int, half_life_days: float) -> float:
+    """Exponential decay: 1.0 today, 0.5 at one half-life, approaching 0.
+
+    half_life_days <= 0 disables (always 1.0). Future timestamps are treated as now.
+    """
+    if half_life_days <= 0:
+        return 1.0
+    age_days = max(0.0, (now_ts - ts_end) / 86400.0)
+    return 0.5 ** (age_days / half_life_days)
+
+
 def cap_hits(
     hits: list[Hit],
     min_k: int | None = None,
@@ -280,6 +291,7 @@ def search(
         return []
     allowed = None if chats is None else set(chats)
 
+    now = now or datetime.now(timezone.utc)
     if time_range is None:
         time_range = parse_time_range(question, now)
     if speaker is None:
@@ -310,6 +322,21 @@ def search(
     for ranking, weight in rankings:
         for rank, window_id in enumerate(ranking):
             fused[window_id] = fused.get(window_id, 0.0) + weight / (config.RRF_K + rank + 1)
+
+    if fused and config.RECENCY_HALF_LIFE_DAYS > 0 and time_range is None:
+        now_ts = int(now.timestamp())
+        placeholders = ",".join("?" * len(fused))
+        ts_end = {
+            r[0]: r[1]
+            for r in conn.execute(
+                f"SELECT id, ts_end FROM windows WHERE id IN ({placeholders})",
+                list(fused),
+            )
+        }
+        for wid, score in fused.items():
+            fused[wid] = score * recency_weight(
+                ts_end.get(wid, now_ts), now_ts, config.RECENCY_HALF_LIFE_DAYS
+            )
 
     best = sorted(fused.items(), key=lambda kv: -kv[1])[:top_k]
     if not best:

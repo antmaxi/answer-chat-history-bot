@@ -56,10 +56,16 @@ WEIGHT_KEYWORD = float(os.getenv("WEIGHT_KEYWORD", "0.7"))
 STOPWORD_DF_RATIO = float(os.getenv("STOPWORD_DF_RATIO", "0.25"))
 # Fusion still ranks TOP_K windows; the LLM only sees a prefix of that list.
 # Always keep MIN_K, then stop at the first hit whose cosine is below COSINE_MIN,
-# never more than MAX_K. COSINE_MIN=0 disables the cutoff (always send MAX_K).
-MIN_K = int(os.getenv("MIN_K", "3"))
-MAX_K = int(os.getenv("MAX_K", "5"))
+# never more than MAX_K. Defaults match TOP_K so the model sees 10 excerpts.
+# COSINE_MIN=0 disables the cutoff (always send MAX_K). Lower MIN_K/MAX_K to trim.
+MIN_K = int(os.getenv("MIN_K", str(TOP_K)))
+MAX_K = int(os.getenv("MAX_K", str(TOP_K)))
 COSINE_MIN = float(os.getenv("COSINE_MIN", "0.7"))
+# Fused scores are multiplied by 0.5^(age_days / half_life) using ts_end, so a
+# year-old window scores half as much as an equivalent one from today when the
+# half-life is 365. 0 disables. Time-range questions skip this — the filter
+# already scoped the period.
+RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "365"))
 # Intra-op threads for the local embedding model. 1 keeps a small VPS usable.
 EMBED_THREADS = int(os.getenv("EMBED_THREADS", "1"))
 

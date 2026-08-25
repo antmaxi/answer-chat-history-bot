@@ -5,11 +5,13 @@ Retrieval quality is checked by hand with `python -m answerbot.search`.
 """
 
 import sqlite3
+from datetime import datetime, timezone
 
 import numpy as np
 import pytest
 
 from answerbot import config, db, index, people, retrieve
+from answerbot.timerange import TimeRange
 from answerbot.answer import Answer, answer as run_answer
 from answerbot.index import build_windows, render
 from answerbot.ingest import live
@@ -737,6 +739,63 @@ class TestCapHits:
         # skipping it returns every fused window, even past MAX_K=2.
         assert len(hits) == 3
         assert len(retrieve.search(conn, "m1", chat_id=1)) == 1
+
+
+class TestRecency:
+    def test_disabled_half_life_is_a_no_op(self):
+        assert retrieve.recency_weight(0, 10**9, 0) == 1.0
+        assert retrieve.recency_weight(0, 10**9, -5) == 1.0
+
+    def test_one_half_life_halves_the_weight(self):
+        now = 1_700_000_000
+        w = retrieve.recency_weight(now - 10 * 86400, now, 10)
+        assert abs(w - 0.5) < 1e-9
+
+    def test_future_timestamps_are_not_boosted(self):
+        assert retrieve.recency_weight(200, 100, 30) == 1.0
+
+    def test_newer_duplicate_outranks_the_older_one(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "RECENCY_HALF_LIFE_DAYS", 365)
+        now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        old = int(datetime(2024, 8, 1, tzinfo=timezone.utc).timestamp())
+        new = int(datetime(2026, 7, 1, tzinfo=timezone.utc).timestamp())
+        seed(
+            conn,
+            [
+                (1, old, "the office wifi password is hunter2"),
+                (2, new, "the office wifi password is hunter2"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(conn, "wifi password", chat_id=1, now=now)
+        assert len(hits) >= 2
+        assert hits[0].ts_end == new
+        assert hits[1].ts_end == old
+
+    def test_time_range_skips_recency_decay(self, conn, fake_embed, monkeypatch):
+        """An explicit period already scoped the hits; don't decay inside it."""
+        monkeypatch.setattr(config, "RECENCY_HALF_LIFE_DAYS", 365)
+
+        def boom(*_a, **_k):
+            raise AssertionError("recency should not run when a time range is set")
+
+        monkeypatch.setattr(retrieve, "recency_weight", boom)
+        now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        old = int(datetime(2024, 8, 1, tzinfo=timezone.utc).timestamp())
+        new = int(datetime(2026, 7, 1, tzinfo=timezone.utc).timestamp())
+        seed(
+            conn,
+            [
+                (1, old, "the office wifi password is hunter2"),
+                (2, new, "the office wifi password is hunter2"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        span = TimeRange(old - 10, new + 10, "both")
+        hits = retrieve.search(
+            conn, "wifi password", chat_id=1, now=now, time_range=span
+        )
+        assert {h.ts_end for h in hits} >= {old, new}
 
 
 class TestConnect:

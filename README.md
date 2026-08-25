@@ -273,11 +273,16 @@ Change these, then run a full `index`.
 Hybrid keyword (FTS5) + vector search, merged with reciprocal rank fusion.
 
 - **`TOP_K`** (`10`) — windows ranked by fusion before the excerpt cap.
-- **`MIN_K`** (`3`) / **`MAX_K`** (`5`) — excerpts sent to the LLM. Always
+- **`MIN_K`** (`10`) / **`MAX_K`** (`10`) — excerpts sent to the LLM. Always
   keep at least `MIN_K`; stop early once cosine falls below `COSINE_MIN`;
-  never send more than `MAX_K`.
+  never send more than `MAX_K`. Defaults match `TOP_K` so the model sees
+  10 windows. Lower them if you want the cosine trim.
 - **`COSINE_MIN`** (`0.7`) — cosine floor for extra excerpts after `MIN_K`.
   `0` disables the cutoff (always send `MAX_K`).
+- **`RECENCY_HALF_LIFE_DAYS`** (`365`) — fused scores are multiplied by
+  `0.5^(age / half-life)` using each window's `ts_end`, so a year-old
+  excerpt scores half as much as an equally relevant one from today.
+  `0` disables. Questions that already name a time range skip this.
 - **`RRF_K`** (`20`) — RRF smoothing; lower keeps the top ranks more
   separated (the usual paper default is 60, which is meant for much longer
   result lists).

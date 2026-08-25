@@ -21,6 +21,7 @@ Rules:
 - If the excerpts don't contain the answer, say exactly: "I couldn't find that in the chat history." Do not speculate.
 - Cite the excerpts you used with their [W#] tags, e.g. "You each owe 200 lari [W2]."
 - Quote sparingly; prefer to summarize. Keep the answer to a few sentences.
+- When excerpts disagree, prefer the more recent ones unless the question is about an earlier period.
 - Answer in the same language as the question."""
 
 CITATION = re.compile(r"\[W(\d+)\]")

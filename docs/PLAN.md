@@ -137,9 +137,12 @@ Hybrid, merged with Reciprocal Rank Fusion (`score = Σ weight/(RRF_K + rank)`):
 1. **BM25** over `messages_fts`, mapped up to owning windows — names, dates, exact terms
 2. **Vector** cosine over `window_vecs` — paraphrase
 
-Fusion ranks `TOP_K` windows, then `cap_hits` keeps `MIN_K`–`MAX_K` excerpts:
-always the first `MIN_K`, then stop when cosine falls below `COSINE_MIN`.
-The bot does not re-window on each question; live ingest batches
+Fusion ranks `TOP_K` windows. Unless the question already has a time range,
+fused scores are multiplied by a recency decay (`0.5^(age / RECENCY_HALF_LIFE_DAYS)`
+on `ts_end`) so newer excerpts outrank equally relevant older ones. Then
+`cap_hits` keeps `MIN_K`–`MAX_K` excerpts (defaults match `TOP_K`, so the
+model sees 10): always the first `MIN_K`, then stop when cosine falls below
+`COSINE_MIN`. The bot does not re-window on each question; live ingest batches
 (`LIVE_REINDEX_EVERY`) and the periodic lookback do.
 
 An empty chat allow-list is *no chats*, never “all chats”. Time phrases
