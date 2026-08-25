@@ -44,7 +44,7 @@ T: dict[str, dict[str, str]] = {
             "Commands: /ask, /ask <question>, /cancel, /settings, /info"
         ),
         "help_admin": (
-            "\nAdmins: /stats, /reindex (recent), /reindex full, /resolve (fix member names)"
+            "\nAdmins: /stats, /reindex (recent), /reindex full, /resolve (names; retry/stop)"
         ),
         "ask_empty": "Ask me a question about this chat's history.",
         "ask_prompt": "What is your question on the chat {name}?",
@@ -62,10 +62,40 @@ T: dict[str, dict[str, str]] = {
         "reindex_full": "Full reindex…",
         "reindex_recent": "Updating recent history…",
         "reindex_done": "Done: {windows} windows across {chats} chat(s).",
-        "resolve_start": "Resolving {n} people via the API — this can take a while…",
-        "resolve_done": (
-            "Resolved {done}/{total} names. Run /reindex to rewrite history with them."
+        "resolve_start": (
+            "Resolving <b>{n}</b> people in the background — Telegram rate-limits "
+            "lookups, so this can take a while.\n"
+            "/resolve — status · /resolve stop — pause · /resolve retry — try skipped people again"
         ),
+        "resolve_running": (
+            "Already running: <b>{done}</b> named, <b>{missed}</b> not in the group, "
+            "<b>{pending}</b> left to try."
+        ),
+        "resolve_progress": (
+            "Resolve: <b>{done}</b> named, <b>{missed}</b> not in the group, "
+            "<b>{pending}</b> remaining…"
+        ),
+        "resolve_last": "Last: {last}",
+        "resolve_done": (
+            "Finished: <b>{done}</b> named, <b>{missed}</b> not in the group, "
+            "<b>{failed}</b> errors. Still pending: <b>{pending}</b>.\n"
+            "Run /reindex to rewrite history with new names. "
+            "/resolve continues; /resolve retry tries skipped people again."
+        ),
+        "resolve_none": (
+            "Nothing to look up. Named: <b>{resolved}</b>. "
+            "Skipped (left / not found): <b>{missed}</b>. "
+            "/resolve retry to try skipped people again."
+        ),
+        "resolve_stopped": (
+            "Paused. <b>{done}</b> named, <b>{missed}</b> not in the group, "
+            "<b>{pending}</b> remaining. /resolve to continue."
+        ),
+        "resolve_paused": (
+            "Telegram asked to wait {wait}s — pausing so we don't burn the quota.\n"
+            "<b>{done}</b> named so far, <b>{pending}</b> remaining. /resolve to continue."
+        ),
+        "resolve_usage": "Usage: /resolve, /resolve retry, /resolve stop",
         "stats": (
             "messages: {messages}\nwindows: {windows}\n"
             "embedded: {embedded}\nchats: {chats}"
@@ -114,7 +144,7 @@ T: dict[str, dict[str, str]] = {
             "Команды: /ask, /ask <вопрос>, /cancel, /settings, /info"
         ),
         "help_admin": (
-            "\nАдминам: /stats, /reindex (недавнее), /reindex full, /resolve (имена участников)"
+            "\nАдминам: /stats, /reindex (недавнее), /reindex full, /resolve (имена; retry/stop)"
         ),
         "ask_empty": "Задайте вопрос об истории этого чата.",
         "ask_prompt": "Какой у вас вопрос по чату {name}?",
@@ -132,10 +162,40 @@ T: dict[str, dict[str, str]] = {
         "reindex_full": "Полная переиндексация…",
         "reindex_recent": "Обновляю недавнюю историю…",
         "reindex_done": "Готово: {windows} окон в {chats} чат(ах).",
-        "resolve_start": "Уточняю {n} человек через API — это может занять время…",
-        "resolve_done": (
-            "Обновлены имена {done}/{total}. Запустите /reindex, чтобы переписать историю."
+        "resolve_start": (
+            "Уточняю <b>{n}</b> человек в фоне — Telegram ограничивает частоту запросов, "
+            "это может занять время.\n"
+            "/resolve — статус · /resolve stop — пауза · /resolve retry — повторить пропущенных"
         ),
+        "resolve_running": (
+            "Уже идёт: <b>{done}</b> имён, <b>{missed}</b> не в группе, "
+            "осталось <b>{pending}</b>."
+        ),
+        "resolve_progress": (
+            "Имена: <b>{done}</b> уточнено, <b>{missed}</b> не в группе, "
+            "осталось <b>{pending}</b>…"
+        ),
+        "resolve_last": "Последнее: {last}",
+        "resolve_done": (
+            "Готово: <b>{done}</b> имён, <b>{missed}</b> не в группе, "
+            "<b>{failed}</b> ошибок. Осталось: <b>{pending}</b>.\n"
+            "Запустите /reindex, чтобы переписать историю. "
+            "/resolve продолжит; /resolve retry — повторить пропущенных."
+        ),
+        "resolve_none": (
+            "Некого уточнять. Имён: <b>{resolved}</b>. "
+            "Пропущено (ушли / не найдены): <b>{missed}</b>. "
+            "/resolve retry — повторить пропущенных."
+        ),
+        "resolve_stopped": (
+            "Пауза. <b>{done}</b> имён, <b>{missed}</b> не в группе, "
+            "осталось <b>{pending}</b>. /resolve чтобы продолжить."
+        ),
+        "resolve_paused": (
+            "Telegram просит подождать {wait} с — ставлю на паузу, чтобы не сжечь лимит.\n"
+            "Пока <b>{done}</b> имён, осталось <b>{pending}</b>. /resolve чтобы продолжить."
+        ),
+        "resolve_usage": "Использование: /resolve, /resolve retry, /resolve stop",
         "stats": (
             "сообщений: {messages}\nокон: {windows}\n"
             "с эмбеддингами: {embedded}\nчатов: {chats}"

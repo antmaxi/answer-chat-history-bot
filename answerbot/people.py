@@ -25,6 +25,122 @@ from . import config, logconfig
 _TRUST = {"live": 0, "api": 1, "manual": 2}
 
 
+def clean_display_name(name: str | None) -> str:
+    """Keep emoji, ZWJ sequences, and styled unicode; only trim ASCII whitespace.
+
+    Do not NFKC-normalize: Telegram names may use mathematical-bold letters and
+    similar styled alphabets, which compatibility folding would flatten.
+    """
+    if not name:
+        return ""
+    return name.strip(" \t\r\n\f\v")
+
+
+def name_from_user(user) -> str | None:
+    """Public display name from a Bot API User, including emoji in first/last name.
+
+    Custom premium emoji in names are not given as entity ids on User; the API
+    supplies a fallback unicode emoji in first_name/last_name, which we keep.
+    """
+    if user is None:
+        return None
+    first = getattr(user, "first_name", None) or ""
+    last = getattr(user, "last_name", None) or ""
+    combined = " ".join(p for p in (first, last) if p)
+    if not combined:
+        combined = getattr(user, "full_name", None) or ""
+    return clean_display_name(combined) or None
+
+
+def clear_miss(conn: sqlite3.Connection, sender_id: int | None) -> None:
+    if sender_id is None:
+        return
+    conn.execute("DELETE FROM resolve_misses WHERE sender_id=?", (sender_id,))
+
+
+def mark_miss(conn: sqlite3.Connection, sender_id: int | None, reason: str = "left") -> None:
+    """Remember a failed getChatMember so the next /resolve pass can skip it."""
+    if sender_id is None:
+        return
+    conn.execute(
+        """INSERT INTO resolve_misses (sender_id, reason, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT (sender_id) DO UPDATE SET
+             reason=excluded.reason,
+             updated_at=excluded.updated_at""",
+        (sender_id, reason, int(time.time())),
+    )
+
+
+def miss_reason_from_error(message: str) -> str:
+    text = (message or "").lower()
+    if "inaccessible" in text or "chat_admin_required" in text:
+        return "hidden"
+    if "forbidden" in text:
+        return "forbidden"
+    if "not found" in text or "participant" in text or "invalid user" in text:
+        return "left"
+    return "error"
+
+
+def pending_ids(
+    conn: sqlite3.Connection, chat_id: int, retry_misses: bool = False
+) -> list[int]:
+    """Sender ids that still need an API name lookup, in a stable order.
+
+    Anyone already in `people` is skipped. Failed lookups stay in
+    `resolve_misses` and are skipped unless `retry_misses` is true.
+    """
+    miss_clause = "" if retry_misses else (
+        "AND NOT EXISTS (SELECT 1 FROM resolve_misses r WHERE r.sender_id = m.sender_id)"
+    )
+    rows = conn.execute(
+        f"""SELECT DISTINCT m.sender_id FROM messages m
+            WHERE m.chat_id=? AND m.sender_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM people p WHERE p.sender_id = m.sender_id)
+              {miss_clause}
+            ORDER BY m.sender_id""",
+        (chat_id,),
+    )
+    return [r[0] for r in rows]
+
+
+def lookup_stats(conn: sqlite3.Connection, chat_id: int | None = None) -> dict[str, int]:
+    """How many senders are named, skipped as API misses, or still pending."""
+    if chat_id is None:
+        msg_where = "m.sender_id IS NOT NULL"
+        params: tuple = ()
+    else:
+        msg_where = "m.chat_id=? AND m.sender_id IS NOT NULL"
+        params = (chat_id,)
+    total = conn.execute(
+        f"SELECT count(DISTINCT m.sender_id) FROM messages m WHERE {msg_where}",
+        params,
+    ).fetchone()[0]
+    resolved = conn.execute(
+        f"""SELECT count(DISTINCT m.sender_id) FROM messages m
+            JOIN people p ON p.sender_id = m.sender_id
+            WHERE {msg_where}""",
+        params,
+    ).fetchone()[0]
+    missed = conn.execute(
+        f"""SELECT count(DISTINCT m.sender_id) FROM messages m
+            JOIN resolve_misses r ON r.sender_id = m.sender_id
+            WHERE {msg_where}
+              AND NOT EXISTS (SELECT 1 FROM people p WHERE p.sender_id = m.sender_id)""",
+        params,
+    ).fetchone()[0]
+    total = int(total or 0)
+    resolved = int(resolved or 0)
+    missed = int(missed or 0)
+    return {
+        "total": total,
+        "resolved": resolved,
+        "missed": missed,
+        "pending": total - resolved - missed,
+    }
+
+
 def record(
     conn: sqlite3.Connection,
     sender_id: int | None,
@@ -33,10 +149,12 @@ def record(
     source: str = "live",
 ) -> bool:
     """Upsert a name unless a more trusted one is already stored. Returns True if written."""
+    display_name = clean_display_name(display_name)
     if sender_id is None or not display_name:
         return False
     row = conn.execute("SELECT source FROM people WHERE sender_id=?", (sender_id,)).fetchone()
     if row and _TRUST.get(source, 0) < _TRUST.get(row["source"], 0):
+        clear_miss(conn, sender_id)
         return False
     conn.execute(
         """INSERT INTO people (sender_id, display_name, username, source, updated_at)
@@ -46,8 +164,9 @@ def record(
              username=excluded.username,
              source=excluded.source,
              updated_at=excluded.updated_at""",
-        (sender_id, display_name.strip(), username, source, int(time.time())),
+        (sender_id, display_name, username, source, int(time.time())),
     )
+    clear_miss(conn, sender_id)
     return True
 
 
@@ -231,14 +350,13 @@ def main() -> None:
         n = load_mapping(conn, items)
         print(f"applied {n} names. Run `python -m answerbot.index` to rewrite history with them.")
     else:
-        total = conn.execute(
-            "SELECT count(DISTINCT sender_id) FROM messages WHERE sender_id IS NOT NULL"
-        ).fetchone()[0]
+        s = lookup_stats(conn)
         by_src = dict(conn.execute("SELECT source, count(*) FROM people GROUP BY source").fetchall())
-        resolved = sum(by_src.values())
-        print(f"people in chat: {total}")
-        print(f"resolved names: {resolved} ({by_src})")
-        print(f"unresolved (User N unless SPEAKER_LABEL=export): {total - resolved}")
+        print(f"people in chat: {s['total']}")
+        print(f"resolved names: {s['resolved']} ({by_src})")
+        print(f"skipped (left / not found): {s['missed']}")
+        print(f"pending API lookup: {s['pending']}")
+        print(f"unresolved (User N unless SPEAKER_LABEL=export): {s['total'] - s['resolved']}")
 
 
 if __name__ == "__main__":

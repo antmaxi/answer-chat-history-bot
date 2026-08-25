@@ -99,6 +99,12 @@ CREATE TABLE people (                -- real names keyed by telegram user id
   updated_at   INTEGER NOT NULL
 );
 
+CREATE TABLE resolve_misses (        -- getChatMember failures for resumable /resolve
+  sender_id  INTEGER PRIMARY KEY,
+  reason     TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE aliases (               -- SPEAKER_LABEL=id → stable "User N"
   sender_id INTEGER PRIMARY KEY,
   ordinal   INTEGER NOT NULL UNIQUE
@@ -179,7 +185,8 @@ Anna & Nino:` headers; the bot turns `[W3]` into `t.me/c/<chat>/<msg_id>` links.
   index stats), `/settings` (UI language: Russian default, or English);
   admins also `/stats` (index, question counts, ask-time median ± std
   and min/max over the last day / week / month), `/reindex` (lookback)
-  and `/reindex full`, `/resolve` (Bot API names). Non-admins see only
+  and `/reindex full`, `/resolve` (Bot API names, background, resumable;
+  `/resolve retry` / `/resolve stop`). Non-admins see only
   `/ask`, `/cancel`, `/settings`, `/info`, `/help` in the command menu.
 - Per-user-per-chat cooldown (`ANSWER_COOLDOWN_SECONDS`); admins exempt.
 - Sliding-hour LLM caps (`ANSWER_MAX_PER_USER_PER_HOUR`, `ANSWER_MAX_PER_HOUR`);

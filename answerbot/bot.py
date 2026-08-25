@@ -18,7 +18,7 @@ from collections import defaultdict, deque
 
 from aiogram import Bot, Dispatcher, F, html
 from aiogram.enums import ChatType
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.types import (
     BotCommand,
@@ -60,6 +60,10 @@ _ASK_PENDING_SECONDS = 5 * 60
 # In-flight retrieve+answer tasks, cancelled by /cancel.
 _in_flight: dict[tuple[int, int], set[asyncio.Task]] = defaultdict(set)
 _chat_title = ""
+_resolve_lock = asyncio.Lock()
+_resolve_task: asyncio.Task | None = None
+_resolve_progress: dict[str, int | str] = {}
+_RESOLVE_PROGRESS_EVERY = 20
 
 
 async def _db(fn, *args):
@@ -348,6 +352,11 @@ def format_answer(result: answer.Answer, lang: str) -> str:
 
 def _record_person(sender_id, name, username, source="live") -> None:
     people.record(conn, sender_id, name, username, source)
+    conn.commit()
+
+
+def _mark_miss(sender_id, reason="left") -> None:
+    people.mark_miss(conn, sender_id, reason)
     conn.commit()
 
 
@@ -657,44 +666,166 @@ async def cmd_reindex(message: Message, command, bot: Bot) -> None:
     )
 
 
-@dp.message(Command("resolve"))
-async def cmd_resolve(message: Message, bot: Bot) -> None:
-    """Look up members' real names via the Bot API, replacing export labels.
+def _resolve_html(lang: str, key: str, *, last_name: str = "", **kwargs) -> str:
+    """Resolve status HTML. Names are quoted so emoji survive and markup in a name cannot break parse_mode."""
+    text = i18n.t(lang, key, **kwargs)
+    if last_name:
+        text += "\n" + i18n.t(lang, "resolve_last", last=html.quote(last_name))
+    return text
 
-    Only people still in the configured group can be looked up; anyone who left
-    is shown as User N (unless SPEAKER_LABEL=export).
+
+def _resolve_snapshot() -> dict:
+    return {
+        "done": int(_resolve_progress.get("done") or 0),
+        "missed": int(_resolve_progress.get("missed") or 0),
+        "failed": int(_resolve_progress.get("failed") or 0),
+        "pending": int(_resolve_progress.get("pending") or 0),
+    }
+
+
+async def _edit_resolve_status(msg: Message, html_text: str) -> None:
+    try:
+        await msg.edit_text(html_text, parse_mode="HTML")
+    except TelegramBadRequest:
+        pass
+    except Exception:
+        log.debug("resolve status edit failed", exc_info=True)
+
+
+async def _resolve_one(bot: Bot, chat_id: int, uid: int) -> tuple[str, str]:
+    """Look up one member. Returns (ok|miss|error|pause, display_name_or_empty)."""
+    while True:
+        try:
+            member = await bot.get_chat_member(chat_id, uid)
+            user = member.user
+            name = people.name_from_user(user)
+            if not name:
+                await _db(_mark_miss, uid, "left")
+                return "miss", ""
+            await _db(_record_person, uid, name, user.username, "api")
+            return "ok", name
+        except TelegramRetryAfter as e:
+            wait = max(float(getattr(e, "retry_after", 1) or 1), 1.0) + 0.25
+            if wait > config.RESOLVE_MAX_FLOOD_WAIT:
+                _resolve_progress["pause_wait"] = int(wait)
+                log.warning("resolve: flood wait %.0fs too long; pausing", wait)
+                return "pause", ""
+            log.info("resolve: flood wait %.1fs (user %s)", wait, uid)
+            await asyncio.sleep(wait)
+        except (TelegramBadRequest, TelegramForbiddenError) as e:
+            await _db(_mark_miss, uid, people.miss_reason_from_error(str(e)))
+            return "miss", ""
+        except Exception:
+            log.warning("resolve: lookup failed user=%s", uid, exc_info=True)
+            return "error", ""
+
+
+async def _resolve_job(bot: Bot, chat_id: int, ids: list[int], status_msg: Message, lang: str) -> None:
+    done = missed = failed = 0
+    pending = len(ids)
+    last_name = ""
+    last_edit = 0.0
+    paused = False
+    _resolve_progress.update(done=0, missed=0, failed=0, pending=pending, last_name="")
+
+    async def publish(key: str, **extra) -> None:
+        await _edit_resolve_status(
+            status_msg,
+            _resolve_html(lang, key, last_name=last_name, **extra),
+        )
+
+    try:
+        for i, uid in enumerate(ids):
+            outcome, name = await _resolve_one(bot, chat_id, uid)
+            if outcome == "pause":
+                paused = True
+                pending = len(ids) - i
+                _resolve_progress["pending"] = pending
+                wait = int(_resolve_progress.get("pause_wait") or 0)
+                await publish("resolve_paused", wait=wait, done=done, pending=pending)
+                return
+            if outcome == "ok":
+                done += 1
+                last_name = name
+            elif outcome == "miss":
+                missed += 1
+            else:
+                failed += 1
+            pending = len(ids) - i - 1
+            _resolve_progress.update(
+                done=done, missed=missed, failed=failed, pending=pending, last_name=last_name
+            )
+            now = time.monotonic()
+            if (i + 1) % _RESOLVE_PROGRESS_EVERY == 0 or now - last_edit >= 15:
+                await publish("resolve_progress", done=done, missed=missed, pending=pending)
+                last_edit = now
+            await asyncio.sleep(config.RESOLVE_DELAY_SECONDS)
+        await publish("resolve_done", done=done, missed=missed, failed=failed, pending=pending)
+    except asyncio.CancelledError:
+        _resolve_progress.update(done=done, missed=missed, failed=failed, pending=pending)
+        await publish("resolve_stopped", done=done, missed=missed, pending=pending)
+        raise
+    finally:
+        log.info(
+            "resolve finished chat_id=%s named=%s missed=%s failed=%s pending=%s paused=%s",
+            chat_id, done, missed, failed, pending, paused,
+        )
+
+
+@dp.message(Command("resolve"))
+async def cmd_resolve(message: Message, command, bot: Bot) -> None:
+    """Background getChatMember backfill. Resumes across runs; honours flood waits.
+
+    Only people the API can see get a name (current members if the bot is an
+    admin). Anyone who left is remembered as a miss and skipped next time.
     """
     if not await _ensure_member(message, bot):
         return
     _cancel_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
-    if message.from_user.id not in config.ADMIN_USER_IDS:
+    if not message.from_user or message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply(i18n.t(lang, "admins_only"))
         return
+
+    global _resolve_task
+    arg = (command.args or "").strip().lower()
+    if arg not in ("", "continue", "retry", "full", "stop", "cancel"):
+        await message.reply(i18n.t(lang, "resolve_usage"))
+        return
+
     chat_id = _configured_chat()
-
-    ids = await _db(
-        lambda: [
-            r[0]
-            for r in conn.execute(
-                "SELECT DISTINCT sender_id FROM messages WHERE chat_id=? AND sender_id IS NOT NULL",
-                (chat_id,),
+    async with _resolve_lock:
+        running = _resolve_task is not None and not _resolve_task.done()
+        if arg in ("stop", "cancel"):
+            if running:
+                _resolve_task.cancel()
+            else:
+                await message.reply(i18n.t(lang, "nothing_to_cancel"))
+            return
+        if running:
+            snap = _resolve_snapshot()
+            last = str(_resolve_progress.get("last_name") or "")
+            await message.reply(
+                _resolve_html(lang, "resolve_running", last_name=last, **snap),
+                parse_mode="HTML",
             )
-        ]
-    )
-    await message.reply(i18n.t(lang, "resolve_start", n=len(ids)))
+            return
 
-    done = 0
-    for uid in ids:
-        try:
-            member = await bot.get_chat_member(chat_id, uid)
-            await _db(_record_person, uid, member.user.full_name, member.user.username, "api")
-            done += 1
-        except Exception:
-            continue  # user left the group, or the lookup was rejected
-        await asyncio.sleep(0.1)  # be gentle with rate limits
+        retry = arg in ("retry", "full")
+        ids = await _db(people.pending_ids, conn, chat_id, retry)
+        if not ids:
+            stats = await _db(people.lookup_stats, conn, chat_id)
+            await message.reply(
+                i18n.t(lang, "resolve_none", resolved=stats["resolved"], missed=stats["missed"]),
+                parse_mode="HTML",
+            )
+            return
 
-    await message.reply(i18n.t(lang, "resolve_done", done=done, total=len(ids)))
+        status_msg = await message.reply(
+            i18n.t(lang, "resolve_start", n=len(ids)),
+            parse_mode="HTML",
+        )
+        _resolve_task = asyncio.create_task(_resolve_job(bot, chat_id, ids, status_msg, lang))
 
 
 # --- Group messages -------------------------------------------------------
@@ -718,7 +849,7 @@ async def _ingest_group_message(message: Message, *, edited: bool = False) -> No
         conn,
         message.chat.id,
         message.message_id,
-        message.from_user.full_name if message.from_user else "Unknown",
+        people.name_from_user(message.from_user) or "Unknown",
         message.from_user.id if message.from_user else None,
         int(message.date.timestamp()),
         text,
@@ -728,7 +859,7 @@ async def _ingest_group_message(message: Message, *, edited: bool = False) -> No
     # overrides any private export label on the next reindex.
     if message.from_user:
         u = message.from_user
-        await _db(_record_person, u.id, u.full_name, u.username)
+        await _db(_record_person, u.id, people.name_from_user(u), u.username)
     if edited:
         asyncio.create_task(_background_index(message.chat.id, force=True))
     else:
@@ -857,6 +988,13 @@ async def _on_startup(bot: Bot) -> None:
 
 async def _on_shutdown(bot: Bot) -> None:
     log.info("bot is down")
+    task = _resolve_task
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await _notify_status(bot, "bot_down")
     _admin_errors.detach()
     await _db(db.checkpoint, conn)

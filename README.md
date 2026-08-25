@@ -100,8 +100,15 @@ by that id:
 - **Automatic (live):** while the bot runs, every message carries the sender's
   real public name, which is recorded and overrides the label on the next
   reindex. Active members self-heal over time, for free.
-- **API backfill:** an admin runs `/resolve` inside the group; the bot looks up
-  each member via the Bot API. Only people *still in the group* can be resolved.
+- **API backfill:** an admin runs `/resolve` in the group or in DM. The bot
+  looks up unresolved people via `getChatMember` in the background, waits out
+  Telegram flood limits, and remembers who left so the next run continues
+  instead of retrying all ~2k ids. `/resolve` while running shows progress;
+  `/resolve stop` pauses; `/resolve retry` tries people previously skipped.
+  Names keep emoji and styled unicode (custom premium emoji arrive as the API's
+  fallback character). Only people the API can still see can be resolved — the
+  bot should be a group **admin** (no extra rights needed) for that. Then
+  `/reindex` to rewrite window text.
 - **Manual (fully local, no API):**
 
   ```bash
@@ -166,7 +173,8 @@ of weeks are rebuilt so recent edits self-heal. Asking a question does **not**
 reindex — only those schedules (and `/reindex`) do. `/info` (includes index
 size), `/settings` (language: Russian by default, or English), `/cancel`
 (stop a running search), and (for admins) `/stats`, `/reindex` /
-`/reindex full` are available. Non-admins see only `/ask`, `/cancel`,
+`/reindex full`, `/resolve` (background name lookup; `retry` / `stop`) are
+available. Non-admins see only `/ask`, `/cancel`,
 `/settings`, `/info`, and `/help` in the command menu.
 
 ## Switching the answer model

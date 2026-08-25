@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS people (
   updated_at   INTEGER NOT NULL
 );
 
+-- getChatMember misses for /resolve, so a later pass skips people who left
+-- (or that the API refused) instead of burning the rate limit on them again.
+CREATE TABLE IF NOT EXISTS resolve_misses (
+  sender_id  INTEGER PRIMARY KEY,
+  reason     TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 -- Stable anonymous ordinals for SPEAKER_LABEL=id, and the fallback under
 -- SPEAKER_LABEL=name: a sequential "User N" assigned once so it doesn't
 -- expose the real telegram id or the exporter's contact labels.

@@ -101,6 +101,10 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 # How often the live bot re-windows recent history to pick up edits. 0 disables.
 LIVE_LOOKBACK_HOURS = float(os.getenv("LIVE_LOOKBACK_HOURS", "6"))
 MEMBERSHIP_CACHE_SECONDS = float(os.getenv("MEMBERSHIP_CACHE_SECONDS", "300"))
+# Pause between getChatMember calls in /resolve (successes and misses).
+RESOLVE_DELAY_SECONDS = float(os.getenv("RESOLVE_DELAY_SECONDS", "0.4"))
+# If Telegram asks to wait longer than this, pause the job; /resolve resumes.
+RESOLVE_MAX_FLOOD_WAIT = float(os.getenv("RESOLVE_MAX_FLOOD_WAIT", "120"))
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

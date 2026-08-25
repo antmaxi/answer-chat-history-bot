@@ -369,6 +369,53 @@ class TestPeopleNames:
         names = people.name_map(conn)
         assert people.resolve(names, 42, "Private Label") == "Real Name"
 
+    def test_keeps_emoji_and_styled_unicode(self, conn):
+        family = "👨‍👩‍👧"
+        bold = "𝗔𝗻𝗻𝗮"  # mathematical sans-serif bold, not HTML
+        people.record(conn, 1, f"  {family} Anna  ", None, "live")
+        people.record(conn, 2, bold, None, "api")
+        people.record(conn, 3, "<b>not html</b>", None, "api")
+        conn.commit()
+        names = people.name_map(conn)
+        assert names[1] == f"{family} Anna"
+        assert names[2] == bold
+        assert names[3] == "<b>not html</b>"
+
+    def test_name_from_user_joins_emoji_names(self):
+        from types import SimpleNamespace
+
+        user = SimpleNamespace(first_name="🔥 Nino", last_name="𝗕𝗼𝘁", full_name="ignored")
+        assert people.name_from_user(user) == "🔥 Nino 𝗕𝗼𝘁"
+        assert people.name_from_user(SimpleNamespace(first_name="  🎉  ", last_name="")) == "🎉"
+        assert people.name_from_user(None) is None
+
+    def test_pending_ids_skips_resolved_and_misses(self, conn):
+        conn.executemany(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, sender_id, text) "
+            "VALUES (1, ?, 1, 'x', ?, 'hi')",
+            [(1, 10), (2, 20), (3, 30), (4, 40)],
+        )
+        people.record(conn, 10, "Anna", None, "live")
+        people.mark_miss(conn, 20, "left")
+        conn.commit()
+        assert people.pending_ids(conn, 1) == [30, 40]
+        assert people.pending_ids(conn, 1, retry_misses=True) == [20, 30, 40]
+        stats = people.lookup_stats(conn, 1)
+        assert stats == {"total": 4, "resolved": 1, "missed": 1, "pending": 2}
+
+    def test_record_clears_miss(self, conn):
+        people.mark_miss(conn, 7, "left")
+        people.record(conn, 7, "🔥 Victor", None, "live")
+        conn.commit()
+        assert people.pending_ids(conn, 1) == []
+        assert conn.execute("SELECT count(*) FROM resolve_misses").fetchone()[0] == 0
+
+    def test_miss_reason_from_error(self):
+        assert people.miss_reason_from_error("USER_NOT_PARTICIPANT") == "left"
+        assert people.miss_reason_from_error("member list is inaccessible") == "hidden"
+        assert people.miss_reason_from_error("Forbidden: bot was blocked") == "forbidden"
+        assert people.miss_reason_from_error("timeout") == "error"
+
     def test_resolve_falls_back_to_given_string(self, conn):
         assert people.resolve({}, 42, "Private Label") == "Private Label"
         assert people.resolve({}, None, "Private Label") == "Private Label"
