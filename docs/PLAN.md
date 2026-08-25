@@ -177,14 +177,17 @@ Anna & Nino:` headers; the bot turns `[W3]` into `t.me/c/<chat>/<msg_id>` links.
 - Commands: `/ask` (prompt, then the next message) or `/ask <question>`;
   `/cancel` (stop a running search or a pending `/ask`); `/info` (includes
   index stats), `/settings` (UI language: Russian default, or English);
-  admins also `/stats`, `/reindex` (lookback) and `/reindex full`,
-  `/resolve` (Bot API names). Non-admins see only `/ask`, `/cancel`,
-  `/settings`, `/info`, `/help` in the command menu.
+  admins also `/stats` (index, question counts, ask-time median ± std
+  and min/max over the last day / week / month), `/reindex` (lookback)
+  and `/reindex full`, `/resolve` (Bot API names). Non-admins see only
+  `/ask`, `/cancel`, `/settings`, `/info`, `/help` in the command menu.
 - Per-user-per-chat cooldown (`ANSWER_COOLDOWN_SECONDS`); admins exempt.
 - Sliding-hour LLM caps (`ANSWER_MAX_PER_USER_PER_HOUR`, `ANSWER_MAX_PER_HOUR`);
   admins exempt. In-memory, counted only when retrieval returned windows.
-- Admins are DMed `Bot is up` / `Bot is down` on polling start and graceful
-  stop, and any `ERROR` log line (message + traceback). Error DMs are
+- Admins are DMed `Bot is starting` as soon as polling begins, then
+  `Bot started, stats: …` after setup (chat lookup, commands, embedding
+  warmup), `Bot is down` on graceful stop, and any `ERROR` log line
+  (message + traceback). Error DMs are
   coalesced (~20s) so a tight loop cannot flood Telegram. They must have
   `/start`'d the bot first.
 

@@ -77,8 +77,18 @@ T: dict[str, dict[str, str]] = {
             "last week: {week} (admin: {week_admin}, others: {week_other})\n"
             "last month: {month} (admin: {month_admin}, others: {month_other})"
         ),
+        "stats_latency": (
+            "\n\nask time:\n"
+            "last day: {day}\n"
+            "last week: {week}\n"
+            "last month: {month}"
+        ),
+        "stats_latency_range": "{median} ± {std} (min {min} / max {max})",
+        "stats_latency_none": "n/a",
+        "bot_starting": "Bot is starting",
         "bot_up": (
-            "Bot is up\n{db}: {messages} messages, {windows} windows{span}\n"
+            "Bot started, stats:\n{db}: {messages} messages, {windows} windows{span}"
+            "{latency}\n"
             "chat: {title} (`{chat_id}`)"
         ),
         "bot_down": "Bot is down",
@@ -137,8 +147,18 @@ T: dict[str, dict[str, str]] = {
             "за неделю: {week} (админы: {week_admin}, остальные: {week_other})\n"
             "за месяц: {month} (админы: {month_admin}, остальные: {month_other})"
         ),
+        "stats_latency": (
+            "\n\nвремя запроса:\n"
+            "за сутки: {day}\n"
+            "за неделю: {week}\n"
+            "за месяц: {month}"
+        ),
+        "stats_latency_range": "{median} ± {std} (мин {min} / макс {max})",
+        "stats_latency_none": "нет данных",
+        "bot_starting": "Бот запускается",
         "bot_up": (
-            "Бот запущен\n{db}: {messages} сообщений, {windows} окон{span}\n"
+            "Бот запущен, статистика:\n{db}: {messages} сообщений, {windows} окон{span}"
+            "{latency}\n"
             "чат: {title} (`{chat_id}`)"
         ),
         "bot_down": "Бот остановлен",

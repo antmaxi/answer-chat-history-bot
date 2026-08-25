@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import sqlite3
+import statistics
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -318,6 +319,44 @@ def _question_windows(conn: sqlite3.Connection, now_ts: int) -> dict[str, int]:
     }
 
 
+def _latency_summary(values: list[int]) -> dict | None:
+    """Median ± sample std, min/max for request latencies in milliseconds."""
+    if not values:
+        return None
+    return {
+        "n": len(values),
+        "median_ms": float(statistics.median(values)),
+        "std_ms": float(statistics.stdev(values)) if len(values) >= 2 else 0.0,
+        "min_ms": float(min(values)),
+        "max_ms": float(max(values)),
+    }
+
+
+def _latency_windows(conn: sqlite3.Connection, now_ts: int) -> dict:
+    """Ask-request latency summaries for the same rolling windows as questions."""
+    cuts = (now_ts - 86400, now_ts - 7 * 86400, now_ts - 30 * 86400)
+    rows = conn.execute(
+        """SELECT ts, latency_ms FROM query_log
+           WHERE ts >= ? AND latency_ms IS NOT NULL""",
+        (cuts[2],),
+    )
+    day: list[int] = []
+    week: list[int] = []
+    month: list[int] = []
+    for ts, ms in rows:
+        ms = int(ms)
+        if ts >= cuts[0]:
+            day.append(ms)
+        if ts >= cuts[1]:
+            week.append(ms)
+        month.append(ms)
+    return {
+        "latency_day": _latency_summary(day),
+        "latency_week": _latency_summary(week),
+        "latency_month": _latency_summary(month),
+    }
+
+
 def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
     """Row counts, indexed message span, and asked-question windows.
 
@@ -325,6 +364,8 @@ def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
     They come from query_log, so they are 0 when QUERY_LOG has always been off.
     Admin vs others uses the current ADMIN_USER_IDS; rows with no user_id
     (CLI / logs from before that column) count as others.
+    Ask-time summaries (median ± sample std, min/max) use `latency_ms` from
+    the same windows; missing when a window has no timed rows.
     """
     def count(table: str) -> int:
         return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
@@ -339,6 +380,7 @@ def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
         "first_message": _iso_utc(first_ts),
         "last_message": _iso_utc(last_ts),
         **_question_windows(conn, now_ts),
+        **_latency_windows(conn, now_ts),
     }
 
 

@@ -209,6 +209,9 @@ class TestSchemaMigrate:
         assert empty["questions_day"] == 0
         assert empty["questions_week"] == 0
         assert empty["questions_month"] == 0
+        assert empty["latency_day"] is None
+        assert empty["latency_week"] is None
+        assert empty["latency_month"] is None
         conn.execute(
             "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 1, 1700000000, 'A', 'old')"
         )
@@ -277,6 +280,41 @@ class TestSchemaMigrate:
         assert s["questions_month"] == 5
         assert s["questions_month_admin"] == 2
         assert s["questions_month_other"] == 3
+
+    def test_stats_summarizes_ask_latency(self, conn):
+        now = 1_800_000_000
+        rows = [
+            (now - 3600, 1000),
+            (now - 3600, 2000),
+            (now - 2 * 86400, 3000),
+            (now - 10 * 86400, 4000),
+            (now - 40 * 86400, 99999),
+            (now - 100, None),
+        ]
+        conn.executemany(
+            "INSERT INTO query_log (ts, question, window_ids, cited_ids, latency_ms) "
+            "VALUES (?, 'q', '[]', '[]', ?)",
+            rows,
+        )
+        conn.commit()
+        s = db.stats(conn, now=now)
+        day = s["latency_day"]
+        assert day["n"] == 2
+        assert day["median_ms"] == 1500
+        assert day["min_ms"] == 1000
+        assert day["max_ms"] == 2000
+        assert abs(day["std_ms"] - 707.1067811865476) < 1e-6
+        week = s["latency_week"]
+        assert week["n"] == 3
+        assert week["median_ms"] == 2000
+        assert week["std_ms"] == 1000
+        assert week["min_ms"] == 1000
+        assert week["max_ms"] == 3000
+        month = s["latency_month"]
+        assert month["n"] == 4
+        assert month["median_ms"] == 2500
+        assert month["min_ms"] == 1000
+        assert month["max_ms"] == 4000
 
 
 class TestChatIdAlign:

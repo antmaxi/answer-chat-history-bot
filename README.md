@@ -146,8 +146,8 @@ To use the exporter's contact labels after all (the old fallback), set
    and an LLM key (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`,
    `OPENROUTER_API_KEY`, or `CURSOR_API_KEY`) in `.env`. Open a DM with the bot
    so it can send you
-   `Bot is up` / `Bot is down` when polling starts or stops, and any logged
-   error with its traceback.
+   `Bot is starting`, then `Bot started, stats: …` after setup, `Bot is down`
+   on stop, and any logged error with its traceback.
 4. Add the bot to that group, then run:
 
 ```bash
@@ -332,7 +332,8 @@ setup.
   and DM access are all pinned to this chat. `/ask` with no question uses
   this chat’s Telegram title in the prompt.
 - **`ADMIN_USER_IDS`** — numeric Telegram user ids (space- or
-  comma-separated). Those accounts get `Bot is up` / `Bot is down` DMs and
+  comma-separated). Those accounts get `Bot is starting`, then
+  `Bot started, stats: …` after setup, `Bot is down` DMs and
   ERROR logs with traceback; they can run `/reindex` and skip the answer
   cooldown and hourly quotas. Open a DM with the bot first so it can write
   to you.

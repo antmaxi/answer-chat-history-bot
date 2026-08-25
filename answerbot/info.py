@@ -62,6 +62,36 @@ def last_update() -> str:
         return "unknown"
 
 
+def fmt_duration_ms(ms: float) -> str:
+    """Format a millisecond duration as seconds with one decimal place."""
+    return f"{ms / 1000:.1f}s"
+
+
+def _latency_phrase(summary: dict | None, lang: str) -> str:
+    if not summary:
+        return i18n.t(lang, "stats_latency_none")
+    return i18n.t(
+        lang,
+        "stats_latency_range",
+        median=fmt_duration_ms(summary["median_ms"]),
+        std=fmt_duration_ms(summary["std_ms"]),
+        min=fmt_duration_ms(summary["min_ms"]),
+        max=fmt_duration_ms(summary["max_ms"]),
+    )
+
+
+def format_latency(s: dict, lang: str | None = None) -> str:
+    """Ask-time lines (median ± std, min/max) for day / week / month."""
+    lang = i18n.normalize_lang(lang)
+    return i18n.t(
+        lang,
+        "stats_latency",
+        day=_latency_phrase(s.get("latency_day"), lang),
+        week=_latency_phrase(s.get("latency_week"), lang),
+        month=_latency_phrase(s.get("latency_month"), lang),
+    )
+
+
 def format_stats(s: dict, lang: str | None = None, *, questions: bool = False) -> str:
     lang = i18n.normalize_lang(lang)
     first, last = s.get("first_message"), s.get("last_message")
@@ -93,6 +123,7 @@ def format_stats(s: dict, lang: str | None = None, *, questions: bool = False) -
             month_admin=s.get("questions_month_admin", 0),
             month_other=s.get("questions_month_other", 0),
         )
+        text += format_latency(s, lang)
     return text
 
 

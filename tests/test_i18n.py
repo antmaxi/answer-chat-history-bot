@@ -65,6 +65,35 @@ class TestStrings:
         assert i18n.t("en", "nothing_to_cancel") == "Nothing to cancel."
         assert i18n.t("ru", "nothing_to_cancel") == "Сейчас нечего отменять."
 
+    def test_admin_startup_dms(self):
+        assert i18n.t("en", "bot_starting") == "Bot is starting"
+        assert i18n.t("ru", "bot_starting") == "Бот запускается"
+        en = i18n.t(
+            "en",
+            "bot_up",
+            db="chat.db",
+            messages=10,
+            windows=3,
+            span="",
+            latency="",
+            title="RUPR",
+            chat_id=-100,
+        )
+        assert en.startswith("Bot started, stats:")
+        assert "chat.db: 10 messages, 3 windows" in en
+        ru = i18n.t(
+            "ru",
+            "bot_up",
+            db="chat.db",
+            messages=10,
+            windows=3,
+            span="",
+            latency="",
+            title="RUPR",
+            chat_id=-100,
+        )
+        assert ru.startswith("Бот запущен, статистика:")
+
 
 class TestThinking:
     def test_both_languages_have_matching_phrase_counts(self):

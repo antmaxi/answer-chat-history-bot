@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from answerbot import config
-from answerbot.info import fmt_dt_utc, format_info, format_stats, last_update
+from answerbot.info import (
+    fmt_dt_utc,
+    fmt_duration_ms,
+    format_info,
+    format_latency,
+    format_stats,
+    last_update,
+)
 
 
 GIT_COMMIT_EPOCH = 1775649600  # 2026-04-04 12:00:00 UTC
@@ -140,17 +147,28 @@ class TestFormatInfo:
             "questions_month": 9,
             "questions_month_admin": 2,
             "questions_month_other": 7,
+            "latency_day": {
+                "n": 2,
+                "median_ms": 1500.0,
+                "std_ms": 707.1067811865476,
+                "min_ms": 1000.0,
+                "max_ms": 2000.0,
+            },
         }
         text = format_stats(s, "en", questions=True)
         assert "questions:" in text
         assert "last day: 2 (admin: 1, others: 1)" in text
         assert "last week: 5 (admin: 1, others: 4)" in text
         assert "last month: 9 (admin: 2, others: 7)" in text
+        assert "ask time:" in text
+        assert "last day: 1.5s ± 0.7s (min 1.0s / max 2.0s)" in text
         ru = format_stats(s, "ru", questions=True)
         assert "вопросов:" in ru
         assert "за сутки: 2 (админы: 1, остальные: 1)" in ru
         assert "за неделю: 5 (админы: 1, остальные: 4)" in ru
         assert "за месяц: 9 (админы: 2, остальные: 7)" in ru
+        assert "время запроса:" in ru
+        assert "нет данных" in ru
 
     def test_format_info_omits_question_counts(self, monkeypatch):
         monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
@@ -167,3 +185,35 @@ class TestFormatInfo:
         assert "messages: 10" in text
         assert "questions:" not in text
         assert "last day:" not in text
+        assert "ask time:" not in text
+
+
+class TestFormatLatency:
+    def test_duration_is_seconds_with_one_decimal(self):
+        assert fmt_duration_ms(0) == "0.0s"
+        assert fmt_duration_ms(1500) == "1.5s"
+        assert fmt_duration_ms(707.1067811865476) == "0.7s"
+
+    def test_none_windows_are_na(self):
+        text = format_latency({}, "en")
+        assert "ask time:" in text
+        assert text.count("n/a") == 3
+        ru = format_latency({}, "ru")
+        assert "время запроса:" in ru
+        assert ru.count("нет данных") == 3
+
+    def test_single_sample_has_zero_std(self):
+        text = format_latency(
+            {
+                "latency_day": {
+                    "n": 1,
+                    "median_ms": 1200.0,
+                    "std_ms": 0.0,
+                    "min_ms": 1200.0,
+                    "max_ms": 1200.0,
+                }
+            },
+            "en",
+        )
+        assert "last day: 1.2s ± 0.0s (min 1.2s / max 1.2s)" in text
+        assert "last week: n/a" in text

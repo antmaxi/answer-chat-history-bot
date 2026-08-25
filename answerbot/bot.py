@@ -32,7 +32,7 @@ from aiogram.types import (
 )
 
 from . import adminlog, answer, config, cooldown, db, embed, followup, i18n, index, logconfig, membership, people, retrieve
-from .info import format_info, format_stats, last_update
+from .info import format_info, format_latency, format_stats, last_update
 from .ingest import live
 from .ingest.export import desktop_ids_for
 
@@ -799,8 +799,8 @@ async def _notify_status(bot: Bot, key: str, **kwargs) -> None:
 
 async def _on_startup(bot: Bot) -> None:
     global _chat_title
-    s = db.stats(conn)
-    log.info("bot is up; database %s: %s", config.DB_PATH, s)
+    log.info("bot is starting")
+    await _notify_status(bot, "bot_starting")
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(logconfig.asyncio_handler)
     await _align_export_chat_ids()
@@ -834,6 +834,8 @@ async def _on_startup(bot: Bot) -> None:
         log.info("embedding model ready")
     except Exception:
         log.exception("embedding warmup failed; the first search will load the model")
+    s = db.stats(conn)
+    log.info("bot is up; database %s: %s", config.DB_PATH, s)
     for uid in sorted(config.ADMIN_USER_IDS):
         lang = await _lang_for(uid)
         await _dm_admin(
@@ -846,6 +848,7 @@ async def _on_startup(bot: Bot) -> None:
                 messages=s["messages"],
                 windows=s["windows"],
                 span=_span_lines(s, lang),
+                latency=format_latency(s, lang),
                 title=title,
                 chat_id=_configured_chat(),
             ),
