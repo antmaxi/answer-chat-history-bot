@@ -329,12 +329,13 @@ def format_answer(result: answer.Answer, lang: str) -> str:
     if link:
         body += f'\n\n➡️ <a href="{link}">{i18n.t(lang, "go_to_first")}</a>'
 
-    sources = result.all_sources()
+    sources = result.grouped_sources()
     if sources:
         lines = "\n".join(
-            f'<a href="{h.link()}">[W{i}]</a>{" ✓" if was_cited else ""} '
+            f'<a href="{h.link()}">{" ".join(f"[W{i}]" for i in idxs)}</a>'
+            f'{" ✓" if was_cited else ""} '
             f'{html.quote(h.when())} · {html.quote(h.speakers)}'
-            for i, h, was_cited in sources
+            for idxs, h, was_cited in sources
         )
         body += f'\n\n<b>{i18n.t(lang, "sources")}</b>\n' + lines
     return body

@@ -76,10 +76,31 @@ class Answer:
         cited = set(self.cited_indices())
         return [(i, h, i in cited) for i, h in enumerate(self.hits, 1)]
 
+    def grouped_sources(self) -> list[tuple[list[int], retrieve.Hit, bool]]:
+        """Retrieved windows collapsed by Telegram deep link.
+
+        Adjacent windows overlap, so two hits can share first_msg and would
+        otherwise render as two identical t.me URLs. Indices stay so [W#] in
+        the answer still match; cited is True if any window in the group was.
+        """
+        groups: dict[str, tuple[list[int], retrieve.Hit, bool]] = {}
+        order: list[str] = []
+        for i, h, was_cited in self.all_sources():
+            key = h.link()
+            if key not in groups:
+                groups[key] = ([i], h, was_cited)
+                order.append(key)
+                continue
+            idxs, hit, cited = groups[key]
+            idxs.append(i)
+            groups[key] = (idxs, hit, cited or was_cited)
+        return [groups[k] for k in order]
+
     def sources_block(self) -> str:
         return "\n".join(
-            f"[W{i}]{' ✓' if was_cited else ''} {h.when()} · {h.speakers} · {h.link()}"
-            for i, h, was_cited in self.all_sources()
+            f"{' '.join(f'[W{i}]' for i in idxs)}"
+            f"{' ✓' if was_cited else ''} {h.when()} · {h.speakers} · {h.link()}"
+            for idxs, h, was_cited in self.grouped_sources()
         )
 
     def primary_source(self) -> retrieve.Hit | None:

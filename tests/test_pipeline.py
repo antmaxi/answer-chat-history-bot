@@ -220,6 +220,23 @@ class TestAnswerCitations:
         # nothing retrieved: no link
         assert Answer("I couldn't find that.", []).primary_link() is None
 
+    def test_sources_join_windows_that_share_a_message_link(self):
+        """Overlapping windows can start on the same Telegram message."""
+        a = Answer(
+            "see [W1] and [W2]",
+            [hit(1), Hit(2, 1, 1, 3, 0, 0, "Anna", "body 2", 0.1), hit(3)],
+        )
+        groups = a.grouped_sources()
+        assert [(idxs, h.first_msg, cited) for idxs, h, cited in groups] == [
+            ([1, 2], 1, True),
+            ([3], 3, False),
+        ]
+        block = a.sources_block()
+        assert block.count("https://t.me/c/") == 2
+        assert "[W1] [W2] ✓" in block
+        assert "[W3]" in block
+        assert "[W3] ✓" not in block
+
 
 class TestAnswerMarkdown:
     def test_prompt_asks_for_markdown(self):
