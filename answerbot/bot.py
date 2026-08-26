@@ -10,15 +10,27 @@ that group. Search always runs against `TELEGRAM_CHAT_ID`.
 
 import asyncio
 import logging
+import socket
 import threading
 import time
 
 from collections import defaultdict, deque
 
 from aiogram import Bot, Dispatcher, F, html
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.session.middlewares.base import (
+    BaseRequestMiddleware,
+    NextRequestMiddlewareType,
+)
 from aiogram.enums import ChatType
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.filters import Command
+from aiogram.methods.base import TelegramMethod, TelegramType
 from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
@@ -995,15 +1007,60 @@ dp.startup.register(_on_startup)
 dp.shutdown.register(_on_shutdown)
 
 
+# Long-poll getUpdates holds a TCP socket to api.telegram.org. Telegram, Docker
+# NAT, and broken IPv6 routes all drop that socket; aiohttp then raises
+# ClientOSError 104 (connection reset). aiogram already retries; we just need a
+# fresh connector and to stop treating the blip as an application error.
+_POLL_TIMEOUT = 20
+_SESSION_TIMEOUT = 70.0
+
+
+class TelegramNetworkGuard(BaseRequestMiddleware):
+    """Drop a dead aiohttp session after a reset so the next call opens a new socket.
+
+    getUpdates is retried by the dispatcher; other methods get one extra attempt.
+    """
+
+    async def __call__(
+        self,
+        make_request: NextRequestMiddlewareType[TelegramType],
+        bot: Bot,
+        method: TelegramMethod[TelegramType],
+    ):
+        try:
+            return await make_request(bot, method)
+        except TelegramNetworkError:
+            session = bot.session
+            if hasattr(session, "_should_reset_connector"):
+                session._should_reset_connector = True
+            if getattr(method, "__api_method__", "") == "getUpdates":
+                raise
+            log.warning(
+                "Telegram %s: connection dropped; retrying once",
+                type(method).__name__,
+            )
+            return await make_request(bot, method)
+
+
+def _telegram_session() -> AiohttpSession:
+    session = AiohttpSession(timeout=_SESSION_TIMEOUT)
+    # Telegram's IPv6 is a common source of getUpdates resets; stay on IPv4.
+    session._connector_init["family"] = socket.AF_INET
+    # Recycle idle sockets before typical Docker/NAT timeouts (~30–60s).
+    session._connector_init["keepalive_timeout"] = 20
+    session.middleware(TelegramNetworkGuard())
+    return session
+
+
 async def main() -> None:
     if not config.TELEGRAM_BOT_TOKEN:
         raise SystemExit("set TELEGRAM_BOT_TOKEN (see .env.example)")
     if config.TELEGRAM_CHAT_ID is None:
         raise SystemExit("set TELEGRAM_CHAT_ID (the supergroup's Bot API id, see .env.example)")
-    bot = Bot(config.TELEGRAM_BOT_TOKEN)
+    bot = Bot(config.TELEGRAM_BOT_TOKEN, session=_telegram_session())
     log.info("starting polling")
     asyncio.create_task(_periodic_lookback())
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, polling_timeout=_POLL_TIMEOUT)
 
 
 if __name__ == "__main__":

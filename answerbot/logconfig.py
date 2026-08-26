@@ -24,6 +24,24 @@ _NOISY = (
 )
 _STREAM_MARK = "_answerbot_stream"
 _FILE_MARK = "_answerbot_file"
+_POLL_FILTER_MARK = "_answerbot_poll"
+
+
+def is_transient_poll_error(record: logging.LogRecord) -> bool:
+    """aiogram already retries getUpdates network errors; they are not app failures."""
+    if record.name != "aiogram.dispatcher":
+        return False
+    return "failed to fetch updates" in record.getMessage().lower()
+
+
+class TransientPollFilter(logging.Filter):
+    """Log Telegram long-poll disconnects at WARNING so they do not page admins."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if is_transient_poll_error(record) and record.levelno >= logging.ERROR:
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+        return True
 
 
 def _level() -> int:
@@ -74,6 +92,12 @@ def setup() -> None:
     for name in _NOISY:
         if level >= logging.INFO:
             logging.getLogger(name).setLevel(logging.WARNING)
+
+    dispatcher = logging.getLogger("aiogram.dispatcher")
+    if not any(getattr(f, _POLL_FILTER_MARK, False) for f in dispatcher.filters):
+        filt = TransientPollFilter()
+        setattr(filt, _POLL_FILTER_MARK, True)
+        dispatcher.addFilter(filt)
 
     if sys.excepthook is sys.__excepthook__:
         sys.excepthook = _excepthook

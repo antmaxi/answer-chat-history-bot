@@ -1,9 +1,10 @@
 """Forward ERROR+ log records to admin Telegram DMs.
 
 Attached for the life of polling. Failures while delivering a DM are never
-logged at ERROR, so a dead chat cannot recurse into more DMs. Bursts are
-collapsed: the first error goes out immediately, later ones in the cooldown
-window are counted and mentioned on the next send.
+logged at ERROR, so a dead chat cannot recurse into more DMs. Transient
+Telegram long-poll disconnects (aiogram already retries those) are skipped.
+Bursts are collapsed: the first error goes out immediately, later ones in
+the cooldown window are counted and mentioned on the next send.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import logging
 import threading
 import time
 from collections.abc import Awaitable, Callable
+
+from .logconfig import is_transient_poll_error
 
 # Telegram's hard cap is 4096; leave headroom for the suppressed-count suffix.
 MAX_LEN = 3500
@@ -59,6 +62,8 @@ class AdminErrorHandler(logging.Handler):
         """Text to send, or None if this record should be skipped / coalesced."""
         msg = record.getMessage()
         if "failed to notify admin" in msg:
+            return None
+        if is_transient_poll_error(record):
             return None
         text = format_error(record, self.max_len)
         with self._lock:
