@@ -760,6 +760,19 @@ class TestChatScope:
         chats = {h.chat_id for h in hits}
         assert chats == {1, 2}
 
+    def test_query_vec_skips_encode_query(self, conn, fake_embed, monkeypatch):
+        seed(conn, [(1, 1, "pangolin")], chat_id=1)
+        index.reindex(conn, progress=False)
+
+        def boom(q):
+            raise AssertionError("encode_query should not run")
+
+        monkeypatch.setattr("answerbot.embed.encode_query", boom)
+        vec = np.zeros(config.EMBED_DIM, dtype=np.float32)
+        hits = retrieve.search(conn, "pangolin", chat_id=1, query_vec=vec)
+        assert hits
+        assert all("pangolin" in h.text for h in hits)
+
     def test_answer_with_empty_allow_list_does_not_search(self, conn, fake_embed):
         seed(conn, [(1, 1, "secret from other chat")], chat_id=1)
         index.reindex(conn, progress=False)

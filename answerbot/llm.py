@@ -7,6 +7,7 @@ switching providers later touches this file and one config key, nothing else.
 import json
 import re
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -385,18 +386,40 @@ class CursorLLM:
         return text
 
 
-def get_llm() -> LLM:
+_llm: LLM | None = None
+_llm_key: tuple | None = None
+_llm_lock = threading.Lock()
+
+
+def _llm_ctor():
     provider = config.LLM_PROVIDER.lower()
     if provider == "claude":
-        return ClaudeLLM()
+        return provider, ClaudeLLM
     if provider == "gemini":
-        return GeminiLLM()
+        return provider, GeminiLLM
     if provider == "ollama":
-        return OllamaLLM()
+        return provider, OllamaLLM
     if provider == "groq":
-        return GroqLLM()
+        return provider, GroqLLM
     if provider == "openrouter":
-        return OpenRouterLLM()
+        return provider, OpenRouterLLM
     if provider == "cursor":
-        return CursorLLM()
+        return provider, CursorLLM
     raise ValueError(f"unknown LLM_PROVIDER: {config.LLM_PROVIDER!r}")
+
+
+def get_llm() -> LLM:
+    """Return the process-wide client for the configured provider.
+
+    Concurrent answers reuse one instance. The cache key includes the
+    constructor identity so tests that swap the class still miss.
+    """
+    global _llm, _llm_key
+    provider, ctor = _llm_ctor()
+    key = (provider, id(ctor))
+    with _llm_lock:
+        if _llm is not None and _llm_key == key:
+            return _llm
+        _llm = ctor()
+        _llm_key = key
+        return _llm

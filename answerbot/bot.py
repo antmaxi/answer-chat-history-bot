@@ -57,8 +57,10 @@ dp = Dispatcher()
 conn = db.connect(check_same_thread=False)
 _db_lock = threading.Lock()
 # Indexing (window rebuild + encode) is serialized separately so ingest and
-# search can proceed while SentenceTransformer is running.
+# SQLite search can proceed while SentenceTransformer is running. Query and
+# passage encode share _embed_lock so they never overlap on the model.
 _index_lock = asyncio.Lock()
+_embed_lock = asyncio.Lock()
 _answers = cooldown.Cooldown(config.ANSWER_COOLDOWN_SECONDS)
 _user_quota = cooldown.Quota(config.ANSWER_MAX_PER_USER_PER_HOUR)
 _global_quota = cooldown.Quota(config.ANSWER_MAX_PER_HOUR)
@@ -81,13 +83,19 @@ _RESOLVE_PROGRESS_EVERY = 20
 _typical_ask_s: float | None = None
 
 
-async def _db(fn, *args):
+async def _db(fn, *args, **kwargs):
     """Run a blocking DB call off the event loop, one at a time."""
     def locked():
         with _db_lock:
-            return fn(*args)
+            return fn(*args, **kwargs)
 
     return await asyncio.to_thread(locked)
+
+
+async def _embed(fn, *args):
+    """Run one SentenceTransformer encode at a time, off the DB lock."""
+    async with _embed_lock:
+        return await asyncio.to_thread(fn, *args)
 
 
 def _encode_job_texts(texts: list[str], on_progress=None):
@@ -114,7 +122,7 @@ async def _apply_jobs(jobs: list[index.EmbedJob], progress: dict | None = None) 
                 def on_progress(done: int, _n: int, start: int = start) -> None:
                     progress["done"] = start + done
 
-            vecs = await asyncio.to_thread(_encode_job_texts, job.pending_texts, on_progress)
+            vecs = await _embed(_encode_job_texts, job.pending_texts, on_progress)
             encoded += len(job.pending_texts)
             if progress is not None:
                 progress["done"] = encoded
@@ -646,7 +654,12 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         )
         # Search the last scheduled index. Live ingest + periodic lookback
         # (and /reindex) refresh windows; doing that on every question pegs CPU.
-        hits = await _db(retrieve.search, conn, search_q, chat_id)
+        # Encode off the SQLite lock so another asker's ingest/search is not
+        # stuck behind SentenceTransformer.
+        query_vec = await _embed(embed.encode_query, search_q)
+        hits = await _db(
+            retrieve.search, conn, search_q, chat_id, query_vec=query_vec
+        )
         if hits:
             blocked = _quota_block(user_id, lang)
             if blocked:

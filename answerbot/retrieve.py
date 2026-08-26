@@ -207,6 +207,7 @@ def _vector_scores(
     question: str,
     chat_id: ChatId,
     time_range: TimeRange | None = None,
+    query_vec: np.ndarray | None = None,
 ) -> tuple[list[int], np.ndarray]:
     """Cosine of `question` against every (optionally time-filtered) window vector."""
     ids, matrix, times = _vectors(conn, chat_id)
@@ -219,7 +220,9 @@ def _vector_scores(
         ids = [i for i, keep in zip(ids, mask) if keep]
         matrix = matrix[mask]
     # Vectors are normalized at write time, so a dot product is the cosine.
-    scores = matrix @ embed.encode_query(question)
+    if query_vec is None:
+        query_vec = embed.encode_query(question)
+    scores = matrix @ query_vec
     return ids, scores
 
 
@@ -285,6 +288,7 @@ def search(
     now: datetime | None = None,
     time_range: TimeRange | None = None,
     speaker: str | None = None,
+    query_vec: np.ndarray | None = None,
 ) -> list[Hit]:
     chats = normalize_chat_ids(chat_id)
     if chats is not None and not chats:
@@ -303,7 +307,9 @@ def search(
     if time_range or speaker:
         pool = top_k * 8
 
-    vec_ids, vec_scores = _vector_scores(conn, question, chat_id, time_range)
+    vec_ids, vec_scores = _vector_scores(
+        conn, question, chat_id, time_range, query_vec=query_vec
+    )
     cosine = {wid: float(s) for wid, s in zip(vec_ids, vec_scores)}
     if vec_ids:
         vec_ranking = [vec_ids[i] for i in np.argsort(-vec_scores)[:pool]]

@@ -496,6 +496,22 @@ class TestGemini:
         monkeypatch.setattr(llm_mod, "GeminiLLM", lambda: "gemini-llm")
         assert llm_mod.get_llm() == "gemini-llm"
 
+    def test_get_llm_reuses_client(self, monkeypatch):
+        from answerbot import llm as llm_mod
+
+        n = {"c": 0}
+
+        class Fake:
+            def __init__(self):
+                n["c"] += 1
+
+        monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+        monkeypatch.setattr(llm_mod, "GeminiLLM", Fake)
+        a = llm_mod.get_llm()
+        b = llm_mod.get_llm()
+        assert a is b
+        assert n["c"] == 1
+
 
 class TestOllamaErrors:
     def test_empty_response_raises(self, monkeypatch):

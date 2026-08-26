@@ -324,7 +324,9 @@ setup.
   retries a TPM 429 once after the wait it suggests (up to 20s). Raise
   `ANSWER_MAX_REQUEST_TOKENS` if you are on Dev Tier.
 - **`ANSWER_COOLDOWN_SECONDS`** (`8`) — per-user wait between answers in
-  the same chat. `0` disables. Admins skip the cooldown.
+  the same chat. `0` disables. Admins skip the cooldown. Several people can
+  be in-flight at once: retrieval encodes one query at a time (not under
+  the SQLite lock), and generation overlaps.
 - **`ANSWER_MAX_PER_USER_PER_HOUR`** (`0`) — sliding-hour cap on LLM
   answers per Telegram user (group and DM share the count). `0` disables.
   Counts only when retrieval found windows, so empty "not in history"

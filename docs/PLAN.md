@@ -35,7 +35,7 @@ Modules:
 - `ingest/export.py` — parse Telegram Desktop JSON into normalized rows
 - `ingest/live.py` — append / upsert Bot API messages; flush or refresh the tail
 - `index.py` — conversation windows, embed (plan/apply so encode can run off the DB lock)
-- `retrieve.py` — hybrid BM25 + cosine, RRF, optional time-range and speaker filters
+- `retrieve.py` — hybrid BM25 + cosine, RRF, optional time-range and speaker filters; `query_vec` so the bot can encode off the SQLite lock
 - `timerange.py` / `people.py` / `followup.py` — question parsing helpers
 - `answer.py` — provider-agnostic LLM call, grounded prompt + citations
 - `i18n.py` — RU/EN UI strings; Russian default, `/settings` to switch
@@ -193,6 +193,10 @@ blocks carry `[W3] 2026-03-14, Anna & Nino:` headers; the bot turns `[W3]` into
   and `/reindex full`, `/resolve` (Bot API names, background, resumable;
   `/resolve retry` / `/resolve stop`). Non-admins see only
   `/ask`, `/cancel`, `/settings`, `/info`, `/help` in the command menu.
+- Several members can ask at once: each ask is its own task. Query encode
+  is off the SQLite lock (one SentenceTransformer call at a time); LLM
+  generation overlaps. Cooldown is per-user-per-chat, so different people
+  are not throttled by each other.
 - Per-user-per-chat cooldown (`ANSWER_COOLDOWN_SECONDS`); admins exempt.
 - Sliding-hour LLM caps (`ANSWER_MAX_PER_USER_PER_HOUR`, `ANSWER_MAX_PER_HOUR`);
   admins exempt. In-memory, counted only when retrieval returned windows.
@@ -208,8 +212,11 @@ blocks carry `[W3] 2026-03-14, Anna & Nino:` headers; the bot turns `[W3]` into
 `index.reindex` rebuilds every window. `index.update` (CLI `--update`, bot
 `/reindex`) re-windows the open tail plus `--lookback-days` (default 14) so
 recent edits are picked up without a full embed. Encoding is planned under the
-DB lock and applied after `embed.encode_passages` returns, so search and ingest
-are not blocked on SentenceTransformer.
+DB lock and applied after `embed.encode_passages` returns. The bot encodes
+search queries the same way — `embed.encode_query` off the lock, then a short
+SQLite critical section — so ingest and another member's FTS are not stuck
+behind SentenceTransformer. Query and passage encode still take turns on the
+model.
 
 ## Quality
 
