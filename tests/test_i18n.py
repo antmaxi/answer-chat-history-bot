@@ -123,6 +123,44 @@ class TestThinking:
                     assert i18n.thinking_phrase(lang, prev) != prev
 
 
+class TestProgress:
+    def test_elapsed_format(self):
+        assert i18n.fmt_elapsed(0) == "0:00"
+        assert i18n.fmt_elapsed(12.9) == "0:12"
+        assert i18n.fmt_elapsed(65) == "1:05"
+        assert i18n.fmt_elapsed(3723) == "1:02:03"
+
+    def test_bar_and_status(self):
+        assert i18n.progress_bar(0) == "░░░░░░░░░░"
+        assert i18n.progress_bar(100) == "██████████"
+        assert i18n.progress_bar(50).count("█") == 5
+        assert i18n.progress_status("Head", None, "0:08") == "Head\n0:08"
+        text = i18n.progress_status("Head", 42, "1:05")
+        assert text.startswith("Head\n")
+        assert "42%" in text
+        assert "1:05" in text
+
+    def test_reindex_pct(self):
+        assert i18n.reindex_pct(0, None) == 0
+        assert i18n.reindex_pct(0, 0) == 100
+        assert i18n.reindex_pct(25, 100) == 25
+        assert i18n.reindex_pct(100, 100) == 100
+
+    def test_estimated_pct_only_when_typical_is_long_enough(self):
+        assert i18n.estimated_pct(5, None) is None
+        assert i18n.estimated_pct(5, 2.0) is None
+        assert i18n.estimated_pct(4, 8.0) == 50
+        assert i18n.estimated_pct(80, 8.0) == 95
+
+    def test_reindex_done_includes_elapsed(self):
+        en = i18n.t("en", "reindex_done", windows=3, chats=1, elapsed="1:05")
+        assert "3 windows" in en
+        assert "1:05" in en
+        ru = i18n.t("ru", "reindex_done", windows=3, chats=1, elapsed="1:05")
+        assert "3 окон" in ru
+        assert "1:05" in ru
+
+
 class TestCommandSpecs:
     def test_same_commands_in_both_languages(self):
         ru = [name for name, _ in i18n.COMMAND_SPECS["ru"]]

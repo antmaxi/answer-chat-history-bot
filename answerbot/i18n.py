@@ -65,7 +65,7 @@ T: dict[str, dict[str, str]] = {
         "admins_only": "Admins only.",
         "reindex_full": "Full reindex…",
         "reindex_recent": "Updating recent history…",
-        "reindex_done": "Done: {windows} windows across {chats} chat(s).",
+        "reindex_done": "Done: {windows} windows across {chats} chat(s) in {elapsed}.",
         "resolve_start": (
             "Resolving <b>{n}</b> people in the background — Telegram rate-limits "
             "lookups, so this can take a while.\n"
@@ -187,7 +187,7 @@ T: dict[str, dict[str, str]] = {
         "admins_only": "Только для админов.",
         "reindex_full": "Полная переиндексация…",
         "reindex_recent": "Обновляю недавнюю историю…",
-        "reindex_done": "Готово: {windows} окон в {chats} чат(ах).",
+        "reindex_done": "Готово: {windows} окон в {chats} чат(ах) за {elapsed}.",
         "resolve_start": (
             "Уточняю <b>{n}</b> человек в фоне — Telegram ограничивает частоту запросов, "
             "это может занять время.\n"
@@ -339,6 +339,55 @@ def thinking_phrase(lang: str | None, previous: str = "") -> str:
     choices = THINKING[lang]
     others = tuple(p for p in choices if p != previous)
     return random.choice(others or choices)
+
+
+_BAR_WIDTH = 10
+_BAR_FILL = "█"
+_BAR_EMPTY = "░"
+# Shorter than this, an elapsed/typical ratio is too noisy to show as %.
+_ESTIMATE_MIN_TYPICAL_S = 3.0
+
+
+def fmt_elapsed(seconds: float) -> str:
+    """Compact running time: `0:12`, `3:05`, `1:02:33`."""
+    s = max(0, int(seconds))
+    hours, rem = divmod(s, 3600)
+    minutes, sec = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{sec:02d}"
+    return f"{minutes}:{sec:02d}"
+
+
+def progress_bar(pct: int, width: int = _BAR_WIDTH) -> str:
+    pct = max(0, min(100, int(pct)))
+    filled = min(width, round(width * pct / 100))
+    return _BAR_FILL * filled + _BAR_EMPTY * (width - filled)
+
+
+def progress_status(head: str, pct: int | None, elapsed: str) -> str:
+    """Status line with optional bar+% and always-on elapsed time."""
+    if pct is None:
+        return f"{head}\n{elapsed}"
+    return f"{head}\n{progress_bar(pct)} {pct}% · {elapsed}"
+
+
+def reindex_pct(done: int, total: int | None) -> int:
+    """Embedding completion. Unknown total (still planning) is 0%; no work is 100%."""
+    if total is None:
+        return 0
+    if total <= 0:
+        return 100
+    return min(100, max(0, int(100 * done / total)))
+
+
+def estimated_pct(elapsed_s: float, typical_s: float | None) -> int | None:
+    """Percent of a typical duration, or None when we cannot estimate.
+
+    Caps at 95% so a slow request does not sit on a finished-looking bar.
+    """
+    if typical_s is None or typical_s < _ESTIMATE_MIN_TYPICAL_S:
+        return None
+    return min(95, max(0, int(100 * max(0.0, elapsed_s) / typical_s)))
 
 
 def settings_text(lang: str) -> str:

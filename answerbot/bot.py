@@ -77,6 +77,8 @@ _resolve_lock = asyncio.Lock()
 _resolve_task: asyncio.Task | None = None
 _resolve_progress: dict[str, int | str] = {}
 _RESOLVE_PROGRESS_EVERY = 20
+# Smoothed ask duration (seconds) for an optional progress bar while searching.
+_typical_ask_s: float | None = None
 
 
 async def _db(fn, *args):
@@ -88,13 +90,34 @@ async def _db(fn, *args):
     return await asyncio.to_thread(locked)
 
 
-async def _apply_jobs(jobs: list[index.EmbedJob]) -> dict:
+def _encode_job_texts(texts: list[str], on_progress=None):
+    return embed.encode_passages(
+        texts, batch_size=64, progress=False, on_progress=on_progress
+    )
+
+
+async def _apply_jobs(jobs: list[index.EmbedJob], progress: dict | None = None) -> dict:
     """Encode off the DB lock, then write vectors under it."""
     windows = 0
+    encoded = 0
+    total_pending = sum(len(job.pending_texts) for job in jobs)
+    if progress is not None:
+        progress["total"] = total_pending
+        progress["done"] = 0
     for job in jobs:
         vecs = None
         if job.pending_texts:
-            vecs = await asyncio.to_thread(embed.encode_passages, job.pending_texts, 64, False)
+            on_progress = None
+            if progress is not None:
+                start = encoded
+
+                def on_progress(done: int, _n: int, start: int = start) -> None:
+                    progress["done"] = start + done
+
+            vecs = await asyncio.to_thread(_encode_job_texts, job.pending_texts, on_progress)
+            encoded += len(job.pending_texts)
+            if progress is not None:
+                progress["done"] = encoded
         windows += await _db(index.apply_job, conn, job, vecs)
     return {"chats": len(jobs), "windows": windows}
 
@@ -105,6 +128,7 @@ async def index_chats(
     lookback: int = 0,
     force: bool = False,
     full: bool = False,
+    progress: dict | None = None,
 ) -> dict:
     """Rebuild windows (and encode) without holding the DB lock during embed."""
     async with _index_lock:
@@ -112,7 +136,7 @@ async def index_chats(
             jobs = await _db(index.plan_reindex, conn, chat_id)
         else:
             jobs = await _db(index.plan_update, conn, chat_id, lookback, force)
-        return await _apply_jobs(jobs)
+        return await _apply_jobs(jobs, progress)
 
 
 async def _background_index(chat_id: int, *, force: bool = False) -> None:
@@ -477,22 +501,72 @@ def _status_html(text: str) -> str:
     return f"<i>{html.quote(text)}</i>"
 
 
-async def _spin_thinking(
-    msg: Message, lang: str, stop: asyncio.Event, last: str
+def _note_ask_latency(seconds: float) -> None:
+    global _typical_ask_s
+    if seconds <= 0:
+        return
+    if _typical_ask_s is None:
+        _typical_ask_s = seconds
+    else:
+        _typical_ask_s = 0.7 * _typical_ask_s + 0.3 * seconds
+
+
+def _seed_typical_ask(stats: dict) -> None:
+    global _typical_ask_s
+    if _typical_ask_s is not None:
+        return
+    for key in ("latency_day", "latency_week", "latency_month"):
+        summary = stats.get(key)
+        if summary and summary.get("median_ms"):
+            _typical_ask_s = float(summary["median_ms"]) / 1000.0
+            return
+
+
+def _progress_html(head: str, pct: int | None, elapsed: str) -> str:
+    return _status_html(i18n.progress_status(head, pct, elapsed))
+
+
+async def _edit_status(msg: Message, text: str) -> None:
+    try:
+        await msg.edit_text(text, parse_mode="HTML")
+    except TelegramBadRequest:
+        pass
+    except Exception:
+        log.debug("status edit failed", exc_info=True)
+
+
+async def _spin_progress(
+    msg: Message,
+    stop: asyncio.Event,
+    started: float,
+    head_fn,
+    pct_fn,
 ) -> None:
-    """Overwrite the placeholder with a fresh synonym until `stop` is set."""
+    """Overwrite a status message with head + optional % bar + elapsed time."""
     while True:
         try:
             await asyncio.wait_for(stop.wait(), timeout=_THINKING_INTERVAL)
             return
         except TimeoutError:
             pass
-        nxt = i18n.thinking_phrase(lang, last)
-        try:
-            await msg.edit_text(_status_html(nxt), parse_mode="HTML")
-            last = nxt
-        except Exception:
-            log.debug("thinking status edit failed", exc_info=True)
+        elapsed = i18n.fmt_elapsed(time.monotonic() - started)
+        await _edit_status(msg, _progress_html(head_fn(), pct_fn(), elapsed))
+
+
+async def _spin_thinking(
+    msg: Message, lang: str, stop: asyncio.Event, last: str, started: float
+) -> None:
+    """Overwrite the placeholder with a fresh synonym until `stop` is set."""
+
+    def head() -> str:
+        nonlocal last
+        last = i18n.thinking_phrase(lang, last)
+        return last
+
+    def pct() -> int | None:
+        return i18n.estimated_pct(time.monotonic() - started, _typical_ask_s)
+
+    await _spin_progress(msg, stop, started, head, pct)
 
 
 async def _stop_thinking(stop: asyncio.Event, task: asyncio.Task | None) -> None:
@@ -559,8 +633,17 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         search_q = followup.rewrite(question, prior, force=force)
 
         phrase = i18n.thinking_phrase(lang)
-        thinking = await message.reply(_status_html(phrase), parse_mode="HTML")
-        spinner = asyncio.create_task(_spin_thinking(thinking, lang, stop, phrase))
+        thinking = await message.reply(
+            _progress_html(
+                phrase,
+                i18n.estimated_pct(0, _typical_ask_s),
+                i18n.fmt_elapsed(0),
+            ),
+            parse_mode="HTML",
+        )
+        spinner = asyncio.create_task(
+            _spin_thinking(thinking, lang, stop, phrase, t0)
+        )
         # Search the last scheduled index. Live ingest + periodic lookback
         # (and /reindex) refresh windows; doing that on every question pegs CPU.
         hits = await _db(retrieve.search, conn, search_q, chat_id)
@@ -580,6 +663,7 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
 
         result = await asyncio.to_thread(complete)
         await _db(answer._record, conn, question, chat_id, result, t0, None, user_id or None)
+        _note_ask_latency(time.monotonic() - t0)
         _history[key].append(question)
         await _stop_thinking(stop, spinner)
         spinner = None
@@ -741,15 +825,44 @@ async def cmd_reindex(message: Message, command, bot: Bot) -> None:
         return
     chat_ids = _source_chat_ids()
     full = (command.args or "").strip().lower() == "full"
-    if full:
-        await message.reply(i18n.t(lang, "reindex_full"))
-        result = await index_chats(chat_ids, full=True)
-    else:
-        await message.reply(i18n.t(lang, "reindex_recent"))
-        result = await index_chats(chat_ids, lookback=config.UPDATE_LOOKBACK_DAYS)
-    await message.reply(
-        i18n.t(lang, "reindex_done", windows=result["windows"], chats=result["chats"])
+    head_key = "reindex_full" if full else "reindex_recent"
+    head = i18n.t(lang, head_key)
+    started = time.monotonic()
+    state: dict = {"done": 0, "total": None}
+    stop = asyncio.Event()
+    status = await message.reply(
+        _progress_html(head, 0, i18n.fmt_elapsed(0)),
+        parse_mode="HTML",
     )
+    ticker = asyncio.create_task(
+        _spin_progress(
+            status,
+            stop,
+            started,
+            lambda: head,
+            lambda: i18n.reindex_pct(int(state.get("done") or 0), state.get("total")),
+        )
+    )
+    try:
+        if full:
+            result = await index_chats(chat_ids, full=True, progress=state)
+        else:
+            result = await index_chats(
+                chat_ids, lookback=config.UPDATE_LOOKBACK_DAYS, progress=state
+            )
+    finally:
+        await _stop_thinking(stop, ticker)
+    done = i18n.t(
+        lang,
+        "reindex_done",
+        windows=result["windows"],
+        chats=result["chats"],
+        elapsed=i18n.fmt_elapsed(time.monotonic() - started),
+    )
+    try:
+        await status.edit_text(done)
+    except Exception:
+        await message.reply(done)
 
 
 def _resolve_html(lang: str, key: str, *, last_name: str = "", **kwargs) -> str:
@@ -1138,6 +1251,7 @@ async def _on_startup(bot: Bot) -> None:
     except Exception:
         log.exception("embedding warmup failed; the first search will load the model")
     s = db.stats(conn)
+    _seed_typical_ask(s)
     log.info("bot is up; database %s: %s", config.DB_PATH, s)
     for uid in sorted(config.ADMIN_USER_IDS):
         lang = await _lang_for(uid)

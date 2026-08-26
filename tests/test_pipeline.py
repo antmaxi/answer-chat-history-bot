@@ -1018,3 +1018,24 @@ class TestConnect:
         path.write_bytes(b"not a sqlite database")
         with pytest.raises(sqlite3.DatabaseError, match="chat.db"):
             db.connect(path)
+
+
+class TestEncodeProgress:
+    def test_on_progress_fires_per_batch(self, monkeypatch):
+        class FakeModel:
+            def encode(self, texts, **_kw):
+                return np.zeros((len(texts), config.EMBED_DIM), np.float32)
+
+        monkeypatch.setattr("answerbot.embed._get_model", lambda: FakeModel())
+        monkeypatch.setattr("answerbot.embed._needs_e5_prefix", lambda: False)
+        from answerbot import embed
+
+        seen: list[tuple[int, int]] = []
+        texts = ["a"] * 130
+        vecs = embed.encode_passages(
+            texts,
+            batch_size=64,
+            on_progress=lambda done, n: seen.append((done, n)),
+        )
+        assert vecs.shape == (130, config.EMBED_DIM)
+        assert seen == [(64, 130), (128, 130), (130, 130)]

@@ -45,16 +45,42 @@ def _needs_e5_prefix() -> bool:
     return "e5" in config.EMBED_MODEL.lower()
 
 
-def encode_passages(texts: list[str], batch_size: int = 64, progress: bool = False) -> np.ndarray:
+def encode_passages(
+    texts: list[str],
+    batch_size: int = 64,
+    progress: bool = False,
+    *,
+    on_progress=None,
+) -> np.ndarray:
     if _needs_e5_prefix():
         texts = [f"passage: {t}" for t in texts]
-    vecs = _get_model().encode(
-        texts,
-        batch_size=batch_size,
-        normalize_embeddings=True,
-        show_progress_bar=progress,
-    )
-    return np.asarray(vecs, dtype=np.float32)
+    if not texts:
+        if on_progress is not None:
+            on_progress(0, 0)
+        return np.zeros((0, config.EMBED_DIM), dtype=np.float32)
+    model = _get_model()
+    if on_progress is None:
+        vecs = model.encode(
+            texts,
+            batch_size=batch_size,
+            normalize_embeddings=True,
+            show_progress_bar=progress,
+        )
+        return np.asarray(vecs, dtype=np.float32)
+
+    parts = []
+    n = len(texts)
+    for i in range(0, n, batch_size):
+        batch = texts[i : i + batch_size]
+        vecs = model.encode(
+            batch,
+            batch_size=batch_size,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        parts.append(np.asarray(vecs, dtype=np.float32))
+        on_progress(min(i + len(batch), n), n)
+    return np.vstack(parts)
 
 
 def encode_query(text: str) -> np.ndarray:
