@@ -74,6 +74,69 @@ def _doc_frequency(conn: sqlite3.Connection, token: str) -> int:
     return n
 
 
+# How many DF-band terms /stats a b will list (Telegram 4096; rest are counted).
+TERM_DF_LIST_LIMIT = 200
+
+
+def _ensure_fts_vocab(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_vocab "
+        "USING fts5vocab(messages_fts, row)"
+    )
+
+
+def term_df_band(
+    conn: sqlite3.Connection,
+    lo_pct: float,
+    hi_pct: float,
+    *,
+    limit: int = TERM_DF_LIST_LIMIT,
+) -> tuple[int, list[tuple[str, int, float]], int]:
+    """Terms whose message DF is in [lo_pct, hi_pct] percent of messages.
+
+    Same definition as fts_query stopwording: messages containing the token
+    over total messages. Skips 1-character tokens. Returns
+    (message_count, [(term, df, pct), ...] most common first, match_count).
+    The list is capped at `limit`; match_count is how many matched before the cap.
+    """
+    if lo_pct > hi_pct:
+        lo_pct, hi_pct = hi_pct, lo_pct
+    n = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+    if not n:
+        return 0, [], 0
+    _ensure_fts_vocab(conn)
+    # SQLite length() is bytes; over-fetch and drop 1-character tokens in Python
+    # so the list matches fts_query (Cyrillic "и" is one character, two bytes).
+    fetch = (max(limit, 0) + 64) if limit else 10_000_000
+    rows = conn.execute(
+        """
+        SELECT term, doc FROM messages_fts_vocab
+        WHERE length(term) > 1
+          AND doc * 100.0 / ? >= ? AND doc * 100.0 / ? <= ?
+        ORDER BY doc DESC, term COLLATE NOCASE
+        LIMIT ?
+        """,
+        (n, lo_pct, n, hi_pct, fetch),
+    ).fetchall()
+    terms: list[tuple[str, int, float]] = []
+    for term, doc in rows:
+        if len(term) <= 1:
+            continue
+        terms.append((term, int(doc), 100.0 * int(doc) / n))
+        if limit and len(terms) >= limit:
+            break
+    match_count = conn.execute(
+        """
+        SELECT count(*) FROM messages_fts_vocab
+        WHERE length(term) > 1
+          AND doc * 100.0 / ? >= ? AND doc * 100.0 / ? <= ?
+        """,
+        (n, lo_pct, n, hi_pct),
+    ).fetchone()[0]
+    match_count = max(int(match_count), len(terms))
+    return n, terms, match_count
+
+
 def fts_query(conn: sqlite3.Connection, question: str) -> str:
     """Turn free text into a safe, informative FTS5 OR-query.
 

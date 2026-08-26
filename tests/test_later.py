@@ -319,6 +319,7 @@ class TestSchemaMigrate:
         assert "aliases" in tables
         assert "user_prefs" in tables
         assert "resolve_misses" in tables
+        assert "messages_fts_vocab" in tables
 
     def test_stats_includes_message_span(self, conn, monkeypatch):
         monkeypatch.setattr(config, "DISPLAY_UTC_OFFSET_HOURS", 2)

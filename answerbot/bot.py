@@ -45,7 +45,15 @@ from aiogram.types import (
 )
 
 from . import adminlog, answer, chat_scope, config, cooldown, db, embed, followup, i18n, index, logconfig, membership, people, retrieve
-from .info import format_info, format_latency, format_stats, last_update
+from .info import (
+    format_info,
+    format_latency,
+    format_stats,
+    format_term_df,
+    last_update,
+    parse_stats_df_args,
+    telegram_chunks,
+)
 from .ingest import live
 from .ingest.export import desktop_ids_for
 
@@ -822,13 +830,25 @@ async def cmd_cancel(message: Message, bot: Bot) -> None:
 
 
 @dp.message(Command("stats"))
-async def cmd_stats(message: Message, bot: Bot) -> None:
+async def cmd_stats(message: Message, command, bot: Bot) -> None:
     if not await _ensure_member(message, bot):
         return
     _cancel_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
     if not message.from_user or message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply(i18n.t(lang, "admins_only"))
+        return
+    try:
+        band = parse_stats_df_args(command.args)
+    except ValueError:
+        await message.reply(i18n.t(lang, "stats_usage"))
+        return
+    if band is not None:
+        lo, hi = band
+        n, terms, match_count = await _db(retrieve.term_df_band, conn, lo, hi)
+        text = format_term_df(n, lo, hi, terms, match_count, lang)
+        for part in telegram_chunks(text):
+            await message.reply(part)
         return
     s = await _db(db.stats, conn)
     s["user_in_use"] = _non_admin_in_flight()

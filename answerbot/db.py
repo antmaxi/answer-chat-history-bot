@@ -34,6 +34,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   text, content='messages', content_rowid='id', tokenize='unicode61'
 );
 
+-- Document frequency per term (messages containing it). Used by /stats a b.
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_vocab USING fts5vocab(messages_fts, row);
+
 -- Keep the FTS index in sync with the messages table.
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
   INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);

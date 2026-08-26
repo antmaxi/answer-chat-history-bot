@@ -26,7 +26,7 @@ from answerbot.answer import (
 from answerbot.index import build_windows, render
 from answerbot.ingest import live
 from answerbot.ingest.export import flatten_text, parse_sender_id, parse_ts
-from answerbot.retrieve import Hit, fts_query
+from answerbot.retrieve import Hit, fts_query, term_df_band
 
 
 @pytest.fixture
@@ -180,6 +180,70 @@ class TestFtsQuery:
 
     def test_no_usable_tokens(self, conn):
         assert fts_query(conn, "?! -") == ""
+
+
+class TestTermDfBand:
+    def test_empty_corpus(self, conn):
+        n, terms, match_count = term_df_band(conn, 0, 100)
+        assert n == 0
+        assert terms == []
+        assert match_count == 0
+
+    def test_band_by_percent(self, conn):
+        # 20 messages: "the" in all (100%), "ok" in 6 (30%), "yeah" in 4 (20%),
+        # "pangolin" in 1 (5%). Single-letter "a" must not appear.
+        for i in range(20):
+            parts = ["the", "a"]
+            if i < 6:
+                parts.append("ok")
+            if i < 4:
+                parts.append("yeah")
+            if i == 0:
+                parts.append("pangolin")
+            conn.execute(
+                "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1,?,?, 'A', ?)",
+                (i, i, " ".join(parts)),
+            )
+        conn.commit()
+        n, terms, match_count = term_df_band(conn, 15, 25)
+        assert n == 20
+        names = [t[0] for t in terms]
+        assert names == ["yeah"]
+        assert terms[0][1] == 4
+        assert terms[0][2] == 20.0
+        assert match_count == 1
+        assert "a" not in names
+
+        n, terms, _ = term_df_band(conn, 25, 100)
+        names = [t[0] for t in terms]
+        assert names == ["the", "ok"]
+        assert terms[0][2] == 100.0
+        assert terms[1][2] == 30.0
+
+        n, terms, _ = term_df_band(conn, 0, 10)
+        names = [t[0] for t in terms]
+        assert names == ["pangolin"]
+
+    def test_swaps_inverted_bounds(self, conn):
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1,1,1,'A','rareword')"
+        )
+        conn.commit()
+        _, forward, _ = term_df_band(conn, 0, 100)
+        _, backward, _ = term_df_band(conn, 100, 0)
+        assert forward == backward
+
+    def test_limit_caps_list_not_count(self, conn):
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1,?,?, 'A', ?)",
+                (i, i, f"token{i} shared"),
+            )
+        conn.commit()
+        _, terms, match_count = term_df_band(conn, 0, 100, limit=3)
+        assert len(terms) == 3
+        assert match_count > 3
+        assert terms[0][0] == "shared"
 
 
 def hit(idx: int) -> Hit:

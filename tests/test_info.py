@@ -9,11 +9,15 @@ from answerbot import config
 from answerbot.info import (
     fmt_dt_utc,
     fmt_duration_ms,
+    fmt_pct,
     format_info,
     format_latency,
     format_stats,
+    format_term_df,
     last_update,
+    parse_stats_df_args,
     provider_label,
+    telegram_chunks,
 )
 
 
@@ -303,3 +307,66 @@ class TestFormatLatency:
         )
         assert "last day: 1.2s ± 0.0s (min 1.2s / max 1.2s)" in text
         assert "last week: n/a" in text
+
+
+class TestParseStatsDfArgs:
+    def test_omitted_is_plain_stats(self):
+        assert parse_stats_df_args(None) is None
+        assert parse_stats_df_args("") is None
+        assert parse_stats_df_args("  ") is None
+
+    def test_two_numbers(self):
+        assert parse_stats_df_args("10 25") == (10.0, 25.0)
+        assert parse_stats_df_args("10% 25%") == (10.0, 25.0)
+        assert parse_stats_df_args("10, 25") == (10.0, 25.0)
+        assert parse_stats_df_args("12.5 30") == (12.5, 30.0)
+
+    def test_hyphen_range(self):
+        assert parse_stats_df_args("10-25") == (10.0, 25.0)
+        assert parse_stats_df_args("10 – 25") == (10.0, 25.0)
+
+    def test_swaps_inverted_bounds(self):
+        assert parse_stats_df_args("25 10") == (10.0, 25.0)
+
+    def test_rejects_bad_input(self):
+        for raw in ("10", "foo 10", "10 20 30", "10 101", "-1 10", "full"):
+            with pytest.raises(ValueError):
+                parse_stats_df_args(raw)
+
+
+class TestFormatTermDf:
+    def test_empty(self):
+        assert format_term_df(0, 10, 25, [], 0, "en") == (
+            "no terms in 10–25% of 0 messages"
+        )
+        assert "нет слов" in format_term_df(12, 10, 25, [], 0, "ru")
+
+    def test_lists_terms_and_truncation(self):
+        terms = [("yeah", 4, 20.0), ("ok", 3, 15.0)]
+        text = format_term_df(20, 10, 25, terms, 2, "en")
+        assert "terms in 10–25% of 20 messages (2):" in text
+        assert "yeah" in text
+        assert "ok" in text
+        assert "more" not in text
+        long = format_term_df(20, 0, 100, terms, 50, "en")
+        assert "2 of 50" in long
+        assert "…and 48 more" in long
+        ru = format_term_df(20, 10, 25, terms, 2, "ru")
+        assert "слова в 10–25%" in ru
+
+
+class TestTelegramChunks:
+    def test_short_is_unchanged(self):
+        assert telegram_chunks("hello", 10) == ["hello"]
+
+    def test_splits_on_newlines(self):
+        text = "aaa\nbbb\nccc"
+        assert telegram_chunks(text, 8) == ["aaa\nbbb", "ccc"]
+
+
+class TestFmtPct:
+    def test_strips_trailing_zeros(self):
+        assert fmt_pct(10.0) == "10"
+        assert fmt_pct(12.5) == "12.5"
+        assert fmt_pct(0.25) == "0.25"
+        assert fmt_pct(0) == "0"

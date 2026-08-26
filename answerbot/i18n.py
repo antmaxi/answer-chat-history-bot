@@ -47,7 +47,8 @@ T: dict[str, dict[str, str]] = {
             "Commands: /ask, /ask <question>, /cancel, /settings, /info"
         ),
         "help_admin": (
-            "\nAdmins: /stats, /reindex (recent), /reindex full, "
+            "\nAdmins: /stats, /stats <a> <b> (terms in a–b% of messages), "
+            "/reindex (recent), /reindex full, "
             "/resolve (names; retry/stop), /who <id>"
         ),
         "ask_empty": "Ask me a question about this chat's history.",
@@ -134,6 +135,14 @@ T: dict[str, dict[str, str]] = {
         "stats_last_user": "\nlast used by others: {when}",
         "stats_last_user_now": "in use now",
         "stats_last_user_never": "never",
+        "stats_usage": (
+            "Usage: /stats — or /stats <from%> <to%> to list terms in that "
+            "share of messages (document frequency, same as STOPWORD_DF_RATIO)."
+        ),
+        "stats_df": "terms in {lo}–{hi}% of {messages} messages ({count}):",
+        "stats_df_shown": "{shown} of {total}",
+        "stats_df_empty": "no terms in {lo}–{hi}% of {messages} messages",
+        "stats_df_more": "…and {n} more",
         "bot_starting": "Bot is starting",
         "bot_up": (
             "Bot started, stats:\n{db}: {messages} messages, {windows} windows{span}"
@@ -171,7 +180,8 @@ T: dict[str, dict[str, str]] = {
             "Команды: /ask, /ask <вопрос>, /cancel, /settings, /info"
         ),
         "help_admin": (
-            "\nАдминам: /stats, /reindex (недавнее), /reindex full, "
+            "\nАдминам: /stats, /stats <a> <b> (слова в a–b% сообщений), "
+            "/reindex (недавнее), /reindex full, "
             "/resolve (имена; retry/stop), /who <id>"
         ),
         "ask_empty": "Задайте вопрос об истории этого чата.",
@@ -258,6 +268,14 @@ T: dict[str, dict[str, str]] = {
         "stats_last_user": "\nпоследний запрос остальных: {when}",
         "stats_last_user_now": "сейчас используется",
         "stats_last_user_never": "никогда",
+        "stats_usage": (
+            "Использование: /stats — или /stats <от%> <до%>, чтобы вывести "
+            "слова в этой доле сообщений (частота документов, как STOPWORD_DF_RATIO)."
+        ),
+        "stats_df": "слова в {lo}–{hi}% из {messages} сообщений ({count}):",
+        "stats_df_shown": "{shown} из {total}",
+        "stats_df_empty": "нет слов в {lo}–{hi}% из {messages} сообщений",
+        "stats_df_more": "…и ещё {n}",
         "bot_starting": "Бот запускается",
         "bot_up": (
             "Бот запущен, статистика:\n{db}: {messages} сообщений, {windows} окон{span}"

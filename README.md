@@ -177,10 +177,11 @@ New group messages are appended live; the tail is re-windowed every
 of weeks are rebuilt so recent edits self-heal. Asking a question does **not**
 reindex — only those schedules (and `/reindex`) do. `/info` (includes index
 size), `/settings` (language: Russian by default, or English), `/cancel`
-(stop a running search), and (for admins) `/stats`, `/reindex` /
-`/reindex full`, `/resolve` (background name lookup; `retry` / `stop`),
-and `/who <id>` (name from a telegram user id, or `User N`, or reply to a
-message) are available. Non-admins see only `/ask`, `/cancel`,
+(stop a running search), and (for admins) `/stats`, `/stats a b` (terms in
+a–b% of messages — the same document frequency as `STOPWORD_DF_RATIO`),
+`/reindex` / `/reindex full`, `/resolve` (background name lookup; `retry` /
+`stop`), and `/who <id>` (name from a telegram user id, or `User N`, or
+reply to a message) are available. Non-admins see only `/ask`, `/cancel`,
 `/settings`, `/info`, and `/help` in the command menu.
 
 ## Switching the answer model
@@ -297,7 +298,7 @@ Hybrid keyword (FTS5) + vector search, merged with reciprocal rank fusion.
   embedding similarity leads.
 - **`STOPWORD_DF_RATIO`** (`0.25`) — query terms that appear in more than
   this fraction of messages are dropped from the keyword query (chat filler
-  like "yeah" / "ok").
+  like "yeah" / "ok"). Admins can inspect the bands with `/stats 10 25`.
 
 ### Answering
 

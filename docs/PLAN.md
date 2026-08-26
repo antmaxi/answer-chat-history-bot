@@ -190,7 +190,8 @@ blocks carry `[W3] 2026-03-14, Anna & Nino:` headers; the bot turns `[W3]` into
   `/cancel` (stop a running search or a pending `/ask`); `/info` (includes
   index stats), `/settings` (UI language: Russian default, or English);
   admins also `/stats` (index, question counts, ask-time median ± std
-  and min/max over the last day / week / month), `/reindex` (lookback)
+  and min/max over the last day / week / month; `/stats a b` lists terms
+  in a–b% of messages), `/reindex` (lookback)
   and `/reindex full`, `/resolve` (Bot API names, background, resumable;
   `/resolve retry` / `/resolve stop`). Non-admins see only
   `/ask`, `/cancel`, `/settings`, `/info`, `/help` in the command menu.

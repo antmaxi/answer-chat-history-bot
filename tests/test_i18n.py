@@ -33,6 +33,7 @@ class TestStrings:
             assert "/info" in text
             assert "/cancel" in text
         assert "/stats" in i18n.t("en", "help_admin")
+        assert "/stats <a> <b>" in i18n.t("en", "help_admin")
         assert "/who" in i18n.t("en", "help_admin")
 
     def test_settings_text_shows_current_language(self):

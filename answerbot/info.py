@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import logging
 import os
+import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -90,6 +91,107 @@ def format_latency(s: dict, lang: str | None = None) -> str:
         week=_latency_phrase(s.get("latency_week"), lang),
         month=_latency_phrase(s.get("latency_month"), lang),
     )
+
+
+_PCT = re.compile(r"^(\d+(?:\.\d+)?)\s*%?$")
+_PCT_RANGE = re.compile(
+    r"^(\d+(?:\.\d+)?)\s*%?\s*[-–—]\s*(\d+(?:\.\d+)?)\s*%?$"
+)
+
+
+def _parse_pct(token: str) -> float | None:
+    m = _PCT.match(token.strip())
+    if not m:
+        return None
+    return float(m.group(1))
+
+
+def parse_stats_df_args(args: str | None) -> tuple[float, float] | None:
+    """Parse `/stats a b` percents. None means plain stats; ValueError if invalid.
+
+    Accepts `10 25`, `10-25`, optional `%` suffixes. Bounds are 0–100 inclusive;
+    a > b is swapped. Same DF units as STOPWORD_DF_RATIO (percent of messages).
+    """
+    raw = (args or "").strip()
+    if not raw:
+        return None
+    m = _PCT_RANGE.match(raw)
+    if m:
+        lo, hi = float(m.group(1)), float(m.group(2))
+    else:
+        parts = raw.replace(",", " ").split()
+        if len(parts) != 2:
+            raise ValueError("need two percentages")
+        lo, hi = _parse_pct(parts[0]), _parse_pct(parts[1])
+        if lo is None or hi is None:
+            raise ValueError("need two percentages")
+    if lo > hi:
+        lo, hi = hi, lo
+    if lo < 0 or hi > 100:
+        raise ValueError("percentages must be 0–100")
+    return lo, hi
+
+
+def fmt_pct(value: float) -> str:
+    """Drop trailing zeros: 10, 12.5, 0.25."""
+    text = f"{value:.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def format_term_df(
+    messages: int,
+    lo: float,
+    hi: float,
+    terms: list[tuple[str, int, float]],
+    match_count: int,
+    lang: str | None = None,
+) -> str:
+    lang = i18n.normalize_lang(lang)
+    lo_s, hi_s = fmt_pct(lo), fmt_pct(hi)
+    if not terms:
+        return i18n.t(
+            lang, "stats_df_empty", lo=lo_s, hi=hi_s, messages=messages
+        )
+    shown = len(terms)
+    if match_count > shown:
+        count = i18n.t(
+            lang, "stats_df_shown", shown=shown, total=match_count
+        )
+    else:
+        count = str(shown)
+    lines = [
+        i18n.t(
+            lang,
+            "stats_df",
+            lo=lo_s,
+            hi=hi_s,
+            messages=messages,
+            count=count,
+        )
+    ]
+    for term, doc, pct in terms:
+        lines.append(f"{fmt_pct(pct):>6}%  {doc:>5}  {term}")
+    if match_count > shown:
+        lines.append(i18n.t(lang, "stats_df_more", n=match_count - shown))
+    return "\n".join(lines)
+
+
+def telegram_chunks(text: str, limit: int = 3500) -> list[str]:
+    """Split on newlines so each piece fits Telegram's 4096 cap."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    rest = text
+    while rest:
+        if len(rest) <= limit:
+            chunks.append(rest)
+            break
+        cut = rest.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(rest[:cut])
+        rest = rest[cut:].lstrip("\n")
+    return chunks
 
 
 def format_stats(s: dict, lang: str | None = None, *, questions: bool = False) -> str:
