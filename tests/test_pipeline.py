@@ -27,14 +27,16 @@ from answerbot.answer import (
 from answerbot.index import build_windows, render
 from answerbot.ingest import live
 from answerbot.ingest.export import flatten_text, parse_sender_id, parse_ts
-from answerbot.retrieve import Hit, fts_query, term_df_band
+from answerbot.retrieve import Hit, fts_query, matches_keep_stem, term_df_band
 
 
 @pytest.fixture
 def conn():
+    retrieve.invalidate_cache()
     c = db.connect(":memory:")
     yield c
     c.close()
+    retrieve.invalidate_cache()
 
 
 @pytest.fixture
@@ -161,7 +163,7 @@ class TestFtsQuery:
         assert '"and"' in q.lower()
 
     def test_drops_high_frequency_terms(self, conn):
-        for i in range(20):
+        for i in range(100):
             conn.execute(
                 "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1,?,?, 'A', ?)",
                 (i, i, "the meeting" if i else "the pangolin"),
@@ -170,6 +172,36 @@ class TestFtsQuery:
         q = fts_query(conn, "the pangolin")
         assert '"pangolin"' in q
         assert '"the"' not in q  # in 100% of messages, so pure noise
+
+    def test_drops_terms_above_default_ratio(self, conn):
+        """0.02 is meant to catch particles at ~2–25% DF, not only 100% words."""
+        assert config.STOPWORD_DF_RATIO == 0.02
+        for i in range(100):
+            # "often" in 5/100 = 5%; "rareword" in 1/100 = 1% (kept: df <= cutoff).
+            text = "often filler" if i < 5 else "filler"
+            if i == 0:
+                text += " rareword"
+            conn.execute(
+                "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1,?,?, 'A', ?)",
+                (i, i, text),
+            )
+        conn.commit()
+        q = fts_query(conn, "often rareword")
+        assert '"rareword"' in q
+        assert '"often"' not in q
+
+    def test_keep_stems_survive_high_df(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "STOPWORD_KEEP", ("цюрих", "швейцария"))
+        for i in range(100):
+            conn.execute(
+                "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1,?,?, 'A', ?)",
+                (i, i, "да цюрихе швейцарии"),
+            )
+        conn.commit()
+        q = fts_query(conn, "да цюрихе швейцарии")
+        assert '"цюрихе"' in q
+        assert '"швейцарии"' in q
+        assert '"да"' not in q
 
     def test_all_stopwords_keeps_terms(self, conn):
         """Better to search noisily than to drop the keyword arm entirely."""
@@ -181,6 +213,19 @@ class TestFtsQuery:
 
     def test_no_usable_tokens(self, conn):
         assert fts_query(conn, "?! -") == ""
+
+
+class TestKeepStem:
+    def test_inflected_place_names(self):
+        assert matches_keep_stem("цюрих", "цюрих")
+        assert matches_keep_stem("цюрихе", "цюрих")
+        assert matches_keep_stem("швейцарии", "швейцария")
+        assert matches_keep_stem("швейцария", "швейцария")
+
+    def test_particles_do_not_match(self):
+        assert not matches_keep_stem("да", "цюрих")
+        assert not matches_keep_stem("уже", "швейцария")
+        assert not matches_keep_stem("спасибо", "цюрих")
 
 
 class TestTermDfBand:

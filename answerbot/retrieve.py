@@ -20,6 +20,8 @@ from .timerange import TimeRange, parse_time_range
 # values: window ids, vectors, (ts_start, ts_end) per window
 _vec_cache: dict[tuple[int, ...] | None, tuple[list[int], np.ndarray, np.ndarray]] = {}
 _df_cache: dict[str, int] = {}
+_KEEP_STEM_MIN = 4
+_KEEP_INFLECT_MIN = 5
 
 # A single chat, an allow-list, or None for “no restriction” (CLI default).
 # An empty sequence is *not* None: it means the caller may see zero chats.
@@ -72,6 +74,28 @@ def _doc_frequency(conn: sqlite3.Connection, token: str) -> int:
     ).fetchone()[0]
     _df_cache[token] = n
     return n
+
+
+def matches_keep_stem(token: str, stem: str) -> bool:
+    """True if `token` is `stem` or an inflected/prefixed form of it."""
+    token, stem = token.lower(), stem.lower()
+    if not stem:
+        return False
+    if token == stem:
+        return True
+    if len(stem) >= _KEEP_STEM_MIN and (
+        token.startswith(stem) or stem.startswith(token)
+    ):
+        return True
+    n = min(len(token), len(stem))
+    return n >= _KEEP_INFLECT_MIN and token[: n - 1] == stem[: n - 1]
+
+
+def is_kept_term(token: str, stems: Sequence[str] | None = None) -> bool:
+    """Protected from DF stopwording (place names, etc.)."""
+    if stems is None:
+        stems = config.STOPWORD_KEEP
+    return any(matches_keep_stem(token, stem) for stem in stems)
 
 
 # How many DF-band terms /stats a b will list (Telegram 4096; rest are counted).
@@ -158,7 +182,11 @@ def fts_query(conn: sqlite3.Connection, question: str) -> str:
     total = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
     if total:
         cutoff = total * config.STOPWORD_DF_RATIO
-        informative = [t for t in tokens if _doc_frequency(conn, t) <= cutoff]
+        informative = [
+            t
+            for t in tokens
+            if is_kept_term(t) or _doc_frequency(conn, t) <= cutoff
+        ]
         # If every term is common, the question is all stopwords — keep them
         # rather than returning nothing and losing the keyword arm entirely.
         tokens = informative or tokens

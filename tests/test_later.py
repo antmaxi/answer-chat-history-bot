@@ -232,6 +232,20 @@ class TestTelegramChatIds:
         assert config.parse_telegram_chat_ids("1 2", main=-1001) == [-1001, -1002]
 
 
+class TestStopwordKeep:
+    def test_unset_is_place_names(self):
+        assert config.parse_stopword_keep(None) == ("цюрих", "швейцария")
+
+    def test_off_clears(self):
+        assert config.parse_stopword_keep("") == ()
+        assert config.parse_stopword_keep("off") == ()
+        assert config.parse_stopword_keep("0") == ()
+
+    def test_splits_comma_or_space(self):
+        assert config.parse_stopword_keep("Цюрих, Швейцария") == ("цюрих", "швейцария")
+        assert config.parse_stopword_keep("foo bar") == ("foo", "bar")
+
+
 class TestSearchChatConfig:
     def test_scope_defaults_to_main(self):
         assert config.parse_search_chat_scope(None) == "main"

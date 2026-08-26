@@ -296,9 +296,13 @@ Hybrid keyword (FTS5) + vector search, merged with reciprocal rank fusion.
 - **`WEIGHT_VECTOR`** (`1.0`) / **`WEIGHT_KEYWORD`** (`0.7`) — relative
   weight of each list in the fusion. Keyword is slightly down-weighted so
   embedding similarity leads.
-- **`STOPWORD_DF_RATIO`** (`0.25`) — query terms that appear in more than
-  this fraction of messages are dropped from the keyword query (chat filler
-  like "yeah" / "ok"). Admins can inspect the bands with `/stats 10 25`.
+- **`STOPWORD_DF_RATIO`** (`0.02`) — query terms that appear in more than
+  this fraction of messages are dropped from the keyword query (particles
+  like "на" / "как" / "да" / "the"). Chat messages are short, so 0.25 often
+  matches nothing. Admins can inspect the bands with `/stats 2 5`.
+- **`STOPWORD_KEEP`** (`цюрих,швейцария`) — stems that are never dropped,
+  including inflected forms (`цюрихе`, `швейцарии`). Set to empty / `off`
+  to clear. Place names can sit in the same DF band as particles.
 
 ### Answering
 

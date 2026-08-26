@@ -52,8 +52,27 @@ RRF_K = int(os.getenv("RRF_K", "20"))
 WEIGHT_VECTOR = float(os.getenv("WEIGHT_VECTOR", "1.0"))
 WEIGHT_KEYWORD = float(os.getenv("WEIGHT_KEYWORD", "0.7"))
 # Query terms appearing in more than this fraction of messages are treated as
-# stopwords and dropped from the keyword query.
-STOPWORD_DF_RATIO = float(os.getenv("STOPWORD_DF_RATIO", "0.25"))
+# stopwords and dropped from the keyword query. Chat lines are short, so even
+# particles rarely reach 25% DF; 0.02 is where this chat's function words sit.
+STOPWORD_DF_RATIO = float(os.getenv("STOPWORD_DF_RATIO", "0.02"))
+
+
+def parse_stopword_keep(raw: str | None) -> tuple[str, ...]:
+    """Stems that survive DF filtering, including inflected forms.
+
+    Unset (`None`) keeps the built-in place-name stems. Empty / 0 / off / none
+    clears the list. Comma or space separated, lowercased.
+    """
+    if raw is None:
+        return ("цюрих", "швейцария")
+    value = str(raw).strip()
+    if value.lower() in ("", "0", "false", "no", "off", "none"):
+        return ()
+    return tuple(p.lower() for p in value.replace(",", " ").split() if p.strip())
+
+
+# Never dropped as stopwords despite high DF. Unset = цюрих, швейцария.
+STOPWORD_KEEP = parse_stopword_keep(os.getenv("STOPWORD_KEEP"))
 # Fusion still ranks TOP_K windows; the LLM only sees a prefix of that list.
 # Always keep MIN_K, then stop at the first hit whose cosine is below COSINE_MIN,
 # never more than MAX_K. Defaults match TOP_K so the model sees 10 excerpts.
