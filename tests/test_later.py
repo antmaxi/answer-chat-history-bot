@@ -921,7 +921,7 @@ class TestOpenAICompat:
         assert llm_mod.get_llm() == "or-llm"
 
 
-def _error_record(msg="failed to answer", exc=True):
+def _error_record(msg="failed to answer", exc=True, name="answerbot"):
     exc_info = None
     if exc:
         try:
@@ -929,8 +929,14 @@ def _error_record(msg="failed to answer", exc=True):
         except RuntimeError:
             exc_info = sys.exc_info()
     return logging.LogRecord(
-        "answerbot", logging.ERROR, __file__, 1, msg, (), exc_info
+        name, logging.ERROR, __file__, 1, msg, (), exc_info
     )
+
+
+_FETCH_UPDATES = (
+    "Failed to fetch updates - TelegramNetworkError: HTTP Client says - "
+    "ClientOSError: [Errno 104] Connection reset by peer"
+)
 
 
 class TestAdminErrorHandler:
@@ -969,6 +975,23 @@ class TestAdminErrorHandler:
         rec = _error_record("failed to notify admin 1 (Bot is up)", exc=False)
         assert h.prepare(rec) is None
 
+    def test_poll_reset_is_not_forwarded(self):
+        from answerbot.adminlog import AdminErrorHandler
+
+        h = AdminErrorHandler(min_interval=0)
+        rec = _error_record(_FETCH_UPDATES, exc=False, name="aiogram.dispatcher")
+        assert h.prepare(rec) is None
+
+    def test_other_dispatcher_errors_are_forwarded(self):
+        from answerbot.adminlog import AdminErrorHandler
+
+        h = AdminErrorHandler(min_interval=0)
+        rec = _error_record(
+            "Cause exception while process update", exc=False, name="aiogram.dispatcher"
+        )
+        text = h.prepare(rec)
+        assert text is not None and "Cause exception" in text
+
 
 def _drop_log_handlers():
     from answerbot import logconfig
@@ -978,6 +1001,10 @@ def _drop_log_handlers():
         if getattr(h, logconfig._STREAM_MARK, False) or getattr(h, logconfig._FILE_MARK, None):
             h.close()
             root.removeHandler(h)
+    dispatcher = logging.getLogger("aiogram.dispatcher")
+    for f in list(dispatcher.filters):
+        if getattr(f, logconfig._POLL_FILTER_MARK, False):
+            dispatcher.removeFilter(f)
 
 
 class TestLogconfig:
@@ -1037,6 +1064,59 @@ class TestLogconfig:
             logconfig.asyncio_handler(None, {"message": "Task exception", "exception": exc})
         assert "Task exception" in caplog.text
         assert "loop boom" in caplog.text
+
+    def test_fetch_updates_is_logged_as_warning(self, tmp_path, monkeypatch):
+        from answerbot import logconfig
+
+        path = tmp_path / "answerbot.log"
+        monkeypatch.setattr(config, "LOG_PATH", path)
+        monkeypatch.setattr(config, "LOG_LEVEL", "INFO")
+        _drop_log_handlers()
+        try:
+            logconfig.setup()
+            logging.getLogger("aiogram.dispatcher").error(_FETCH_UPDATES)
+            text = path.read_text(encoding="utf-8")
+        finally:
+            _drop_log_handlers()
+        assert "WARNING aiogram.dispatcher: Failed to fetch updates" in text
+        assert "ERROR aiogram.dispatcher: Failed to fetch updates" not in text
+
+    def test_poll_filter_is_idempotent(self, tmp_path, monkeypatch):
+        from answerbot import logconfig
+
+        monkeypatch.setattr(config, "LOG_PATH", tmp_path / "answerbot.log")
+        _drop_log_handlers()
+        try:
+            logconfig.setup()
+            logconfig.setup()
+            n = sum(
+                1
+                for f in logging.getLogger("aiogram.dispatcher").filters
+                if getattr(f, logconfig._POLL_FILTER_MARK, False)
+            )
+        finally:
+            _drop_log_handlers()
+        assert n == 1
+
+
+class TestTransientPollFilter:
+    def test_demotes_fetch_updates(self):
+        from answerbot.logconfig import TransientPollFilter, is_transient_poll_error
+
+        rec = _error_record(_FETCH_UPDATES, exc=False, name="aiogram.dispatcher")
+        assert is_transient_poll_error(rec)
+        TransientPollFilter().filter(rec)
+        assert rec.levelno == logging.WARNING
+        assert rec.levelname == "WARNING"
+
+    def test_leaves_other_errors_alone(self):
+        from answerbot.logconfig import TransientPollFilter, is_transient_poll_error
+
+        rec = _error_record("failed to answer")
+        assert not is_transient_poll_error(rec)
+        TransientPollFilter().filter(rec)
+        assert rec.levelno == logging.ERROR
+        assert rec.levelname == "ERROR"
 
 
 class TestEmbedToken:
