@@ -13,6 +13,7 @@ from answerbot.info import (
     format_latency,
     format_stats,
     last_update,
+    provider_label,
 )
 
 
@@ -87,6 +88,11 @@ class TestLastUpdate:
 
 
 class TestFormatInfo:
+    @pytest.fixture(autouse=True)
+    def _llm(self, monkeypatch):
+        monkeypatch.setattr(config, "LLM_PROVIDER", "claude")
+        monkeypatch.setattr(config, "ANSWER_MODEL", "claude-sonnet-5")
+
     def test_includes_repo_contact_and_timestamp_en(self, monkeypatch):
         monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
         stamp = "2026-04-04 14:00:00 UTC+02:00"
@@ -97,6 +103,9 @@ class TestFormatInfo:
         assert "https://test.repo" in text
         assert "@antmaxi" in text
         assert "UTC+02:00" in text
+        assert "claude-sonnet-5" in text
+        assert "Claude" in text
+        assert "zero-retention" not in text
 
     def test_default_is_russian(self, monkeypatch):
         monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
@@ -186,6 +195,30 @@ class TestFormatInfo:
         assert "questions:" not in text
         assert "last day:" not in text
         assert "ask time:" not in text
+
+    def test_cursor_includes_zero_retention(self, monkeypatch):
+        monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
+        monkeypatch.setattr(config, "LLM_PROVIDER", "cursor")
+        monkeypatch.setattr(config, "ANSWER_MODEL", "composer-2.5")
+        en = format_info("2026-04-04 14:00:00 UTC+02:00", "en")
+        assert "composer-2.5" in en
+        assert "Cursor" in en
+        assert "zero-retention" in en
+        assert "not stored after the request" in en
+        assert "not used to train models" in en
+        ru = format_info("2026-04-04 14:00:00 UTC+02:00", "ru")
+        assert "composer-2.5" in ru
+        assert "Cursor" in ru
+        assert "нулевого хранения" in ru
+        assert "не сохраняются после запроса" in ru
+        assert "не используются для обучения моделей" in ru
+
+
+class TestProviderLabel:
+    def test_known_and_unknown(self):
+        assert provider_label("cursor") == "Cursor"
+        assert provider_label("openrouter") == "OpenRouter"
+        assert provider_label("Custom") == "Custom"
 
 
 class TestFormatLatency:

@@ -130,9 +130,15 @@ T: dict[str, dict[str, str]] = {
         "info_msg": (
             "🤖 <b>{bot_name}</b>\n\n"
             "📅 <b>Last update:</b> {last_commit}\n"
+            "🧠 <b>Model:</b> {model} ({provider}){retention}\n"
             "🔗 <b>Source code:</b> {github_repo}\n\n"
             "💬 Feel free to contact @antmaxi for suggestions on what to improve "
             "or if you run into issues with the bot."
+        ),
+        "info_retention_cursor": (
+            "\n🔒 The model provider has a zero-retention policy: your question "
+            "and the chat excerpts used to answer it are not stored after the "
+            "request and are not used to train models."
         ),
         "unknown": "unknown",
     },
@@ -230,9 +236,15 @@ T: dict[str, dict[str, str]] = {
         "info_msg": (
             "🤖 <b>{bot_name}</b>\n\n"
             "📅 <b>Последнее обновление:</b> {last_commit}\n"
+            "🧠 <b>Модель:</b> {model} ({provider}){retention}\n"
             "🔗 <b>Исходный код:</b> {github_repo}\n\n"
             "💬 Пишите @antmaxi с предложениями по улучшению бота или если что-то "
             "не работает."
+        ),
+        "info_retention_cursor": (
+            "\n🔒 Провайдер модели соблюдает политику нулевого хранения данных: "
+            "ваш вопрос и фрагменты чата, по которым строится ответ, не "
+            "сохраняются после запроса и не используются для обучения моделей."
         ),
         "unknown": "неизвестно",
     },

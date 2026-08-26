@@ -1,4 +1,4 @@
-"""About-the-bot text for /info: last git commit (or file mtime) and source URL."""
+"""About-the-bot text for /info: last git commit (or file mtime), LLM, and source URL."""
 
 from __future__ import annotations
 
@@ -127,16 +127,36 @@ def format_stats(s: dict, lang: str | None = None, *, questions: bool = False) -
     return text
 
 
+_PROVIDER_LABELS = {
+    "claude": "Claude",
+    "gemini": "Gemini",
+    "groq": "Groq",
+    "openrouter": "OpenRouter",
+    "cursor": "Cursor",
+    "ollama": "Ollama",
+}
+
+
+def provider_label(provider: str | None = None) -> str:
+    raw = (provider if provider is not None else config.LLM_PROVIDER).strip()
+    return _PROVIDER_LABELS.get(raw.lower(), raw)
+
+
 def format_info(updated: str, lang: str | None = None, stats: dict | None = None) -> str:
     lang = i18n.normalize_lang(lang)
     if updated == "unknown":
         updated = i18n.t(lang, "unknown")
+    provider = config.LLM_PROVIDER.lower()
+    retention = i18n.t(lang, "info_retention_cursor") if provider == "cursor" else ""
     text = i18n.t(
         lang,
         "info_msg",
         bot_name=i18n.t(lang, "bot_name"),
         last_commit=html.escape(updated),
         github_repo=html.escape(config.GITHUB_REPO),
+        model=html.escape(config.ANSWER_MODEL),
+        provider=html.escape(provider_label()),
+        retention=retention,
     )
     if stats is not None:
         text += "\n\n" + format_stats(stats, lang)
