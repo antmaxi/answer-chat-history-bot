@@ -42,7 +42,8 @@ T: dict[str, dict[str, str]] = {
         "not_member": "You're not a member of the group this bot serves.",
         "help": (
             "I answer questions from the chat history I index.\n"
-            "In the main group, @mention me, reply to my messages, or /ask. In DM, just ask.\n"
+            "In the main group, @mention me (or reply to a question with @mention), "
+            "reply to my messages, or /ask. In DM, just ask.\n"
             "Commands: /ask, /ask <question>, /cancel, /settings, /info"
         ),
         "help_admin": (
@@ -165,7 +166,8 @@ T: dict[str, dict[str, str]] = {
         "not_member": "Вы не состоите в группе, которую обслуживает этот бот.",
         "help": (
             "Я отвечаю на вопросы по проиндексированной истории чатов.\n"
-            "В основной группе упомяните меня, ответьте на моё сообщение или /ask. В личке просто спросите.\n"
+            "В основной группе упомяните меня (или ответьте на вопрос с упоминанием), "
+            "ответьте на моё сообщение или /ask. В личке просто спросите.\n"
             "Команды: /ask, /ask <вопрос>, /cancel, /settings, /info"
         ),
         "help_admin": (

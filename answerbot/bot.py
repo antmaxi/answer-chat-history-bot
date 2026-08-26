@@ -1,8 +1,9 @@
 """The Telegram bot: aiogram wrapper around retrieve + answer, plus live ingest.
 
 Pinned to a main supergroup (`TELEGRAM_CHAT_ID`). Extra source chats can be
-listed in `TELEGRAM_CHAT_IDS`. Replies when @mentioned in the main group or
-when someone replies to one of its own messages. Requires privacy mode OFF in
+listed in `TELEGRAM_CHAT_IDS`. Replies when @mentioned in the main group
+(including a bare @mention as a reply to someone else's question) or when
+someone replies to one of its own messages. Requires privacy mode OFF in
 BotFather, or it receives no group messages to index at all.
 
 DM behaviour: any plain message is a question, if the sender is a member of
@@ -635,9 +636,16 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         prior = _history[key][-1] if _history[key] else None
         force = False
         reply = message.reply_to_message
-        if reply and reply.from_user:
+        if reply is not None:
             me = await message.bot.me()
-            force = reply.from_user.id == me.id
+            prior, force = followup.search_prior_for_reply(
+                question,
+                history_prior=prior,
+                reply_text=reply.text or reply.caption,
+                reply_from_bot=bool(
+                    reply.from_user and reply.from_user.id == me.id
+                ),
+            )
         search_q = followup.rewrite(question, prior, force=force)
 
         phrase = i18n.thinking_phrase(lang)
@@ -1130,8 +1138,11 @@ async def cmd_who(message: Message, command, bot: Bot) -> None:
 
 async def _mentions_bot(message: Message, bot: Bot) -> bool:
     me = await bot.me()
-    if message.reply_to_message and message.reply_to_message.from_user.id == me.id:
+    reply = message.reply_to_message
+    if reply and reply.from_user and reply.from_user.id == me.id:
         return True
+    if not me.username:
+        return False
     text = message.text or message.caption or ""
     return f"@{me.username}".lower() in text.lower()
 
@@ -1187,7 +1198,15 @@ async def on_group_message(message: Message, bot: Bot) -> None:
 
     if await _mentions_bot(message, bot):
         me = await bot.me()
-        question = text.replace(f"@{me.username}", "").strip()
+        reply = message.reply_to_message
+        question = followup.question_from_mention(
+            text,
+            me.username or "",
+            reply_text=(reply.text or reply.caption) if reply else None,
+            reply_from_bot=bool(
+                reply and reply.from_user and reply.from_user.id == me.id
+            ),
+        )
         user_id = message.from_user.id if message.from_user else None
         await respond(message, question, await _search_chats_for(bot, user_id))
 

@@ -11,7 +11,7 @@ shipped. This document is the current design, not a build queue.
 | History | One-time Telegram Desktop JSON export to seed, Bot API to stay live |
 | Answering | Claude, Gemini, Groq, OpenRouter, Cursor, or local Ollama (`LLM_PROVIDER`) behind the same protocol |
 | Embeddings | Local `sentence-transformers` (`intfloat/multilingual-e5-small`) |
-| Interface | Group (@mention or reply) **and** private DM |
+| Interface | Group (@mention, reply to a question, or reply to the bot) **and** private DM |
 | Storage | Single SQLite file — FTS5 for keyword, float32 blobs + numpy for vectors |
 
 No vector DB, no Postgres, no queue. Docker is optional packaging of this same
@@ -176,8 +176,9 @@ blocks carry `[W3] 2026-03-14, Anna & Nino:` headers; the bot turns `[W3]` into
 
 ## Bot behaviour
 
-- **Group**: replies when @mentioned or when someone replies to its message,
-  and only in `TELEGRAM_CHAT_ID`. Privacy mode **off** in BotFather, otherwise
+- **Group**: replies when @mentioned (a bare @mention as a reply to someone
+  else's message uses that text as the question) or when someone replies to
+  its message, and only in `TELEGRAM_CHAT_ID`. Privacy mode **off** in BotFather, otherwise
   it receives nothing. Incoming messages and edits are ingested; the tail
   re-windows every `LIVE_REINDEX_EVERY` messages. Every `LIVE_LOOKBACK_HOURS`
   the last `UPDATE_LOOKBACK_DAYS` are rebuilt so recent edits self-heal.

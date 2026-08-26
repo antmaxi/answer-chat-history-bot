@@ -59,6 +59,91 @@ class TestFollowup:
         assert followup.rewrite("how much was it", "  ") == "how much was it"
 
 
+class TestMentionReply:
+    def test_bare_mention_uses_replied_text(self):
+        assert followup.question_from_mention(
+            "@histbot", "histbot", reply_text="when is the ski trip"
+        ) == "when is the ski trip"
+
+    def test_bare_mention_is_case_insensitive(self):
+        assert followup.question_from_mention(
+            "@HistBot", "histbot", reply_text="when?"
+        ) == "when?"
+
+    def test_extra_words_stay_the_question(self):
+        assert followup.question_from_mention(
+            "@histbot who paid?", "histbot", reply_text="the ski trip"
+        ) == "who paid?"
+
+    def test_reply_to_bot_does_not_steal_bot_text(self):
+        assert followup.question_from_mention(
+            "@histbot",
+            "histbot",
+            reply_text="Here is my previous answer…",
+            reply_from_bot=True,
+        ) == ""
+
+    def test_reply_to_bot_keeps_followup_text(self):
+        assert followup.question_from_mention(
+            "how much was it",
+            "histbot",
+            reply_text="the ski trip cost 50",
+            reply_from_bot=True,
+        ) == "how much was it"
+
+    def test_no_reply_strips_mention(self):
+        assert followup.question_from_mention(
+            "@histbot when is the ski trip", "histbot"
+        ) == "when is the ski trip"
+
+    def test_empty_reply_text_stays_empty(self):
+        assert followup.question_from_mention(
+            "@histbot", "histbot", reply_text=""
+        ) == ""
+
+    def test_search_prior_uses_human_reply_when_question_differs(self):
+        prior, force = followup.search_prior_for_reply(
+            "how much was it",
+            history_prior="wifi",
+            reply_text="the ski trip",
+            reply_from_bot=False,
+        )
+        assert (prior, force) == ("the ski trip", False)
+        assert followup.rewrite("how much was it", prior, force=force) == (
+            "the ski trip — follow-up: how much was it"
+        )
+
+    def test_search_prior_skips_when_question_is_the_reply(self):
+        prior, force = followup.search_prior_for_reply(
+            "the ski trip",
+            history_prior="wifi",
+            reply_text="the ski trip",
+            reply_from_bot=False,
+        )
+        assert (prior, force) == ("wifi", False)
+
+    def test_search_prior_reply_to_bot_uses_history(self):
+        prior, force = followup.search_prior_for_reply(
+            "how much was it",
+            history_prior="the ski trip",
+            reply_text="some answer",
+            reply_from_bot=True,
+        )
+        assert (prior, force) == ("the ski trip", True)
+
+    def test_search_prior_standalone_reply_does_not_stitch(self):
+        prior, force = followup.search_prior_for_reply(
+            "who paid for the ski trip",
+            history_prior=None,
+            reply_text="lunch was great",
+            reply_from_bot=False,
+        )
+        assert (prior, force) == ("lunch was great", False)
+        assert followup.rewrite(
+            "who paid for the ski trip", prior, force=force
+        ) == "who paid for the ski trip"
+
+
 class TestSpeakerParse:
     names = ["Anna Maria", "Anna", "Nino"]
 

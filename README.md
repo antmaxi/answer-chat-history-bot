@@ -167,6 +167,9 @@ Or `docker compose up -d` if you followed [Docker](#docker) above.
 
 In the group it answers when @mentioned or replied to, or after `/ask` (then
 the next message is the question). `/ask <question>` still works in one step.
+A bare @mention as a **reply** to someone else's message treats that message
+as the question. Extra words on the ping stay the question (and, if they look
+like a follow-up, search is rewritten against the replied-to text).
 In a DM it answers only
 if you are currently a member of `TELEGRAM_CHAT_ID`; otherwise it declines.
 New group messages are appended live; the tail is re-windowed every
