@@ -129,7 +129,59 @@ def parse_telegram_chat_id(raw: str | None) -> int | None:
     return n
 
 
+def parse_telegram_chat_ids(raw: str | None, *, main: int | None = None) -> list[int]:
+    """Bot API ids from a space/comma-separated list. `main` is always first."""
+    ids: list[int] = []
+    seen: set[int] = set()
+    if main is not None:
+        ids.append(main)
+        seen.add(main)
+    if raw is None:
+        return ids
+    for part in str(raw).replace(",", " ").split():
+        cid = parse_telegram_chat_id(part)
+        if cid is None or cid in seen:
+            continue
+        ids.append(cid)
+        seen.add(cid)
+    return ids
+
+
+SEARCH_CHAT_SCOPES = ("main", "all")
+SEARCH_CHAT_ACCESS_MODES = ("members", "all")
+
+
+def parse_search_chat_scope(raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        return "main"
+    value = str(raw).strip().lower()
+    if value not in SEARCH_CHAT_SCOPES:
+        allowed = ", ".join(SEARCH_CHAT_SCOPES)
+        raise ValueError(f"SEARCH_CHAT_SCOPE must be one of {allowed}, got {raw!r}")
+    return value
+
+
+def parse_search_chat_access(raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        return "members"
+    value = str(raw).strip().lower()
+    if value not in SEARCH_CHAT_ACCESS_MODES:
+        allowed = ", ".join(SEARCH_CHAT_ACCESS_MODES)
+        raise ValueError(f"SEARCH_CHAT_ACCESS must be one of {allowed}, got {raw!r}")
+    return value
+
+
 TELEGRAM_CHAT_ID = parse_telegram_chat_id(os.getenv("TELEGRAM_CHAT_ID"))
+# Main chat first, then any extra source chats. Omitting TELEGRAM_CHAT_IDS
+# keeps the bot on a single chat, matching older deployments.
+TELEGRAM_CHAT_IDS = parse_telegram_chat_ids(
+    os.getenv("TELEGRAM_CHAT_IDS"), main=TELEGRAM_CHAT_ID
+)
+# main = search only TELEGRAM_CHAT_ID; all = every id in TELEGRAM_CHAT_IDS.
+SEARCH_CHAT_SCOPE = parse_search_chat_scope(os.getenv("SEARCH_CHAT_SCOPE"))
+# members = secondary chats the asker currently belongs to; all = every
+# configured source after the main-chat membership gate.
+SEARCH_CHAT_ACCESS = parse_search_chat_access(os.getenv("SEARCH_CHAT_ACCESS"))
 ADMIN_USER_IDS = {
     int(x) for x in os.getenv("ADMIN_USER_IDS", "").replace(",", " ").split() if x.strip()
 }

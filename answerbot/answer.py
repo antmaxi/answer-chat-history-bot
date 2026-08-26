@@ -15,7 +15,7 @@ from . import config, db, logconfig, retrieve
 from .ingest import live
 from .llm import LLM, get_llm
 
-SYSTEM = """You answer questions about a group chat, using ONLY the excerpts provided.
+SYSTEM = """You answer questions about chat history, using ONLY the excerpts provided.
 
 Rules:
 - Base every claim strictly on the excerpts. Never use outside knowledge or guess.
@@ -24,6 +24,7 @@ Rules:
 - Format the answer in Markdown: **bold** for names, products, and constraints; *italic* for light emphasis; `code` for exact values or identifiers; hyphen bullets (`- `) when a list is clearer than a paragraph. Do not wrap the whole answer in a fenced code block. Do not use headings or images.
 - Quote sparingly; prefer to summarize. Keep the answer to a few sentences.
 - When excerpts disagree, prefer the more recent ones unless the question is about an earlier period.
+- Excerpts may come from more than one chat. The header names the source chat when several are in play. Do not mix facts across chats unless the question asks for a combined picture.
 - Answer in the same language as the question."""
 
 CITATION = re.compile(r"\[W(\d+)\]")
@@ -165,20 +166,39 @@ def format_answer_body(result: Answer) -> str:
     return linkify_citations(markdown_to_html(result.text), result.hits)
 
 
-def build_context(hits: list[retrieve.Hit]) -> str:
+def chat_label(hit: retrieve.Hit, chat_titles: dict[int, str] | None = None) -> str:
+    """Display name for a hit's source chat."""
+    if chat_titles and hit.chat_id in chat_titles:
+        return chat_titles[hit.chat_id]
+    return str(hit.chat_id)
+
+
+def build_context(
+    hits: list[retrieve.Hit], chat_titles: dict[int, str] | None = None
+) -> str:
+    multi = len({h.chat_id for h in hits}) > 1
     blocks = []
     for i, hit in enumerate(hits, 1):
-        header = f"[W{i}] {hit.when()}, {hit.speakers}:"
+        if multi:
+            header = f"[W{i}] {chat_label(hit, chat_titles)}, {hit.when()}, {hit.speakers}:"
+        else:
+            header = f"[W{i}] {hit.when()}, {hit.speakers}:"
         blocks.append(f"{header}\n{hit.text}")
     return "\n\n".join(blocks)
 
 
-def complete_answer(question: str, hits: list[retrieve.Hit], llm: LLM | None = None) -> Answer:
+def complete_answer(
+    question: str,
+    hits: list[retrieve.Hit],
+    llm: LLM | None = None,
+    *,
+    chat_titles: dict[int, str] | None = None,
+) -> Answer:
     """LLM call only — no DB. The bot runs this off the SQLite lock."""
     if not hits:
         return Answer("I couldn't find that in the chat history.", [])
     llm = llm or get_llm()
-    user = f"Excerpts:\n\n{build_context(hits)}\n\n---\nQuestion: {question}"
+    user = f"Excerpts:\n\n{build_context(hits, chat_titles)}\n\n---\nQuestion: {question}"
     text = llm.complete(SYSTEM, user)
     return Answer(text, hits)
 

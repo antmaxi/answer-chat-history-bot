@@ -4,6 +4,7 @@ Deliberately no embedding calls — those need the model on disk and are slow.
 Retrieval quality is checked by hand with `python -m answerbot.search`.
 """
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -16,6 +17,9 @@ from answerbot.answer import (
     Answer,
     SYSTEM,
     answer as run_answer,
+    build_context,
+    chat_label,
+    complete_answer,
     format_answer_body,
     markdown_to_html,
 )
@@ -239,6 +243,9 @@ class TestAnswerCitations:
 
 
 class TestAnswerMarkdown:
+    def test_prompt_mentions_multiple_chats(self):
+        assert "more than one chat" in SYSTEM
+
     def test_prompt_asks_for_markdown(self):
         assert "Markdown" in SYSTEM
         assert "**bold**" in SYSTEM
@@ -476,6 +483,22 @@ class TestPeopleNames:
         assert people.pending_ids(conn, 1, retry_misses=True) == [20, 30, 40]
         stats = people.lookup_stats(conn, 1)
         assert stats == {"total": 4, "resolved": 1, "missed": 1, "pending": 2}
+
+    def test_pending_lookups_try_each_chat_before_a_global_miss(self, conn):
+        conn.executemany(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, sender_id, text) "
+            "VALUES (?, ?, 1, 'x', ?, 'hi')",
+            [(1, 1, 10), (2, 1, 10), (2, 2, 20), (3, 1, 30)],
+        )
+        people.record(conn, 10, "Anna", None, "live")
+        conn.commit()
+        lookups = people.pending_lookups(conn, [1, 2, 3])
+        assert lookups == [(20, [2]), (30, [3])]
+        assert people.pending_ids(conn, [1, 2]) == [20]
+        stats = people.lookup_stats(conn, [1, 2])
+        assert stats["total"] == 2
+        assert stats["resolved"] == 1
+        assert stats["pending"] == 1
 
     def test_record_clears_miss(self, conn):
         people.mark_miss(conn, 7, "left")
@@ -743,6 +766,47 @@ class TestChatScope:
         result = run_answer(conn, "secret", chat_id=[], llm=FakeLLM())
         assert result.hits == []
         assert "couldn't find" in result.text.lower()
+
+    def test_query_log_keeps_the_allow_list(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "QUERY_LOG", True)
+        seed(conn, [(1, 1, "alpha unique")], chat_id=1)
+        seed(conn, [(1, 1, "beta unique")], chat_id=2)
+        index.reindex(conn, progress=False)
+        run_answer(conn, "unique", chat_id=[1, 2], llm=FakeLLM())
+        row = conn.execute("SELECT chat_ids FROM query_log").fetchone()
+        assert json.loads(row[0]) == [1, 2]
+
+    def test_build_context_labels_source_chat_when_mixed(self):
+        hits = [
+            Hit(1, 11, 1, 1, 0, 0, "Anna", "alpha body", 0.1),
+            Hit(2, 22, 1, 1, 0, 0, "Nino", "beta body", 0.1),
+        ]
+        titles = {11: "Main", 22: "Offtopic"}
+        assert chat_label(hits[0], titles) == "Main"
+        ctx = build_context(hits, titles)
+        assert "[W1] Main," in ctx
+        assert "[W2] Offtopic," in ctx
+        single = build_context(hits[:1], titles)
+        assert "Main" not in single
+        assert "[W1] " in single
+
+    def test_complete_answer_prompt_includes_chat_titles(self):
+        class CaptureLLM:
+            def __init__(self):
+                self.user = None
+
+            def complete(self, system, user):
+                self.user = user
+                return "found it [W1]"
+
+        llm = CaptureLLM()
+        hits = [
+            Hit(1, 11, 1, 1, 0, 0, "Anna", "alpha body", 0.1),
+            Hit(2, 22, 1, 1, 0, 0, "Nino", "beta body", 0.1),
+        ]
+        complete_answer("what", hits, llm, chat_titles={11: "Main", 22: "Offtopic"})
+        assert "Main" in llm.user
+        assert "Offtopic" in llm.user
 
 
 class TestAnswerFlushesTail:

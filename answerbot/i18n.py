@@ -41,8 +41,8 @@ T: dict[str, dict[str, str]] = {
     "en": {
         "not_member": "You're not a member of the group this bot serves.",
         "help": (
-            "I answer questions from the group's history.\n"
-            "In the group, @mention me, reply to my messages, or /ask. In DM, just ask.\n"
+            "I answer questions from the chat history I index.\n"
+            "In the main group, @mention me, reply to my messages, or /ask. In DM, just ask.\n"
             "Commands: /ask, /ask <question>, /cancel, /settings, /info"
         ),
         "help_admin": (
@@ -51,6 +51,7 @@ T: dict[str, dict[str, str]] = {
         ),
         "ask_empty": "Ask me a question about this chat's history.",
         "ask_prompt": "What is your question on the chat {name}?",
+        "ask_prompt_all": "What is your question on {name} and the other indexed chats?",
         "search_cancelled": "Search cancelled.",
         "nothing_to_cancel": "Nothing to cancel.",
         "cooldown": "Wait {wait} before asking again.",
@@ -137,6 +138,7 @@ T: dict[str, dict[str, str]] = {
             "{latency}\n"
             "chat: {title} (`{chat_id}`)"
         ),
+        "bot_up_more": "\nalso indexing: {chats}",
         "bot_down": "Bot is down",
         "settings_title": "⚙️ <b>Settings</b>",
         "settings_lang_label": "Language:",
@@ -161,8 +163,8 @@ T: dict[str, dict[str, str]] = {
     "ru": {
         "not_member": "Вы не состоите в группе, которую обслуживает этот бот.",
         "help": (
-            "Я отвечаю на вопросы по истории группы.\n"
-            "В группе упомяните меня, ответьте на моё сообщение или /ask. В личке просто спросите.\n"
+            "Я отвечаю на вопросы по проиндексированной истории чатов.\n"
+            "В основной группе упомяните меня, ответьте на моё сообщение или /ask. В личке просто спросите.\n"
             "Команды: /ask, /ask <вопрос>, /cancel, /settings, /info"
         ),
         "help_admin": (
@@ -171,6 +173,7 @@ T: dict[str, dict[str, str]] = {
         ),
         "ask_empty": "Задайте вопрос об истории этого чата.",
         "ask_prompt": "Какой у вас вопрос по чату {name}?",
+        "ask_prompt_all": "Какой у вас вопрос по чату {name} и другим проиндексированным чатам?",
         "search_cancelled": "Поиск отменён.",
         "nothing_to_cancel": "Сейчас нечего отменять.",
         "cooldown": "Подождите {wait}, прежде чем спросить снова.",
@@ -257,6 +260,7 @@ T: dict[str, dict[str, str]] = {
             "{latency}\n"
             "чат: {title} (`{chat_id}`)"
         ),
+        "bot_up_more": "\nтакже индексирую: {chats}",
         "bot_down": "Бот остановлен",
         "settings_title": "⚙️ <b>Настройки</b>",
         "settings_lang_label": "Язык:",

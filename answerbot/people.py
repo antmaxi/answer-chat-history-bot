@@ -19,6 +19,7 @@ import html
 import re
 import sqlite3
 import time
+from collections.abc import Sequence
 
 from . import config, i18n, logconfig
 
@@ -84,36 +85,80 @@ def miss_reason_from_error(message: str) -> str:
     return "error"
 
 
+def _as_chat_ids(chat_id: int | Sequence[int] | None) -> list[int] | None:
+    if chat_id is None:
+        return None
+    if isinstance(chat_id, (str, bytes)):
+        raise TypeError(f"chat_id must be int or a sequence of ints, not {type(chat_id).__name__}")
+    if isinstance(chat_id, Sequence):
+        return [int(c) for c in chat_id]
+    return [int(chat_id)]
+
+
+def pending_lookups(
+    conn: sqlite3.Connection,
+    chat_id: int | Sequence[int],
+    retry_misses: bool = False,
+) -> list[tuple[int, list[int]]]:
+    """Unresolved senders and the configured chats they posted in.
+
+    Order is by sender id; each sender's chats follow `chat_id` (main first
+    when the bot passes TELEGRAM_CHAT_IDS). Try those chats before recording
+    a global miss — someone may be visible in a secondary group only.
+    """
+    chats = _as_chat_ids(chat_id) or []
+    if not chats:
+        return []
+    miss_clause = "" if retry_misses else (
+        "AND NOT EXISTS (SELECT 1 FROM resolve_misses r WHERE r.sender_id = m.sender_id)"
+    )
+    placeholders = ",".join("?" * len(chats))
+    rows = conn.execute(
+        f"""SELECT DISTINCT m.sender_id, m.chat_id FROM messages m
+            WHERE m.chat_id IN ({placeholders}) AND m.sender_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM people p WHERE p.sender_id = m.sender_id)
+              {miss_clause}""",
+        chats,
+    )
+    by_user: dict[int, set[int]] = {}
+    for sender_id, cid in rows:
+        by_user.setdefault(int(sender_id), set()).add(int(cid))
+    order = {c: i for i, c in enumerate(chats)}
+    result: list[tuple[int, list[int]]] = []
+    for uid in sorted(by_user):
+        user_chats = sorted(by_user[uid], key=lambda c: order.get(c, 10**9))
+        result.append((uid, user_chats))
+    return result
+
+
 def pending_ids(
-    conn: sqlite3.Connection, chat_id: int, retry_misses: bool = False
+    conn: sqlite3.Connection,
+    chat_id: int | Sequence[int],
+    retry_misses: bool = False,
 ) -> list[int]:
     """Sender ids that still need an API name lookup, in a stable order.
 
     Anyone already in `people` is skipped. Failed lookups stay in
     `resolve_misses` and are skipped unless `retry_misses` is true.
     """
-    miss_clause = "" if retry_misses else (
-        "AND NOT EXISTS (SELECT 1 FROM resolve_misses r WHERE r.sender_id = m.sender_id)"
-    )
-    rows = conn.execute(
-        f"""SELECT DISTINCT m.sender_id FROM messages m
-            WHERE m.chat_id=? AND m.sender_id IS NOT NULL
-              AND NOT EXISTS (SELECT 1 FROM people p WHERE p.sender_id = m.sender_id)
-              {miss_clause}
-            ORDER BY m.sender_id""",
-        (chat_id,),
-    )
-    return [r[0] for r in rows]
+    return [uid for uid, _ in pending_lookups(conn, chat_id, retry_misses)]
 
 
-def lookup_stats(conn: sqlite3.Connection, chat_id: int | None = None) -> dict[str, int]:
+def lookup_stats(
+    conn: sqlite3.Connection, chat_id: int | Sequence[int] | None = None
+) -> dict[str, int]:
     """How many senders are named, skipped as API misses, or still pending."""
-    if chat_id is None:
+    chats = _as_chat_ids(chat_id)
+    if chats is None:
         msg_where = "m.sender_id IS NOT NULL"
         params: tuple = ()
+    elif not chats:
+        msg_where = "0"
+        params = ()
     else:
-        msg_where = "m.chat_id=? AND m.sender_id IS NOT NULL"
-        params = (chat_id,)
+        placeholders = ",".join("?" * len(chats))
+        msg_where = f"m.chat_id IN ({placeholders}) AND m.sender_id IS NOT NULL"
+        params = tuple(chats)
     total = conn.execute(
         f"SELECT count(DISTINCT m.sender_id) FROM messages m WHERE {msg_where}",
         params,

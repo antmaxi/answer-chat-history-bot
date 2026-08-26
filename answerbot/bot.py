@@ -1,11 +1,12 @@
 """The Telegram bot: aiogram wrapper around retrieve + answer, plus live ingest.
 
-Pinned to one supergroup (`TELEGRAM_CHAT_ID`). Replies when @mentioned or when
-someone replies to one of its own messages. Requires privacy mode OFF in
+Pinned to a main supergroup (`TELEGRAM_CHAT_ID`). Extra source chats can be
+listed in `TELEGRAM_CHAT_IDS`. Replies when @mentioned in the main group or
+when someone replies to one of its own messages. Requires privacy mode OFF in
 BotFather, or it receives no group messages to index at all.
 
 DM behaviour: any plain message is a question, if the sender is a member of
-that group. Search always runs against `TELEGRAM_CHAT_ID`.
+the main group. Search follows `SEARCH_CHAT_SCOPE` / `SEARCH_CHAT_ACCESS`.
 """
 
 import asyncio
@@ -42,7 +43,7 @@ from aiogram.types import (
     Message,
 )
 
-from . import adminlog, answer, config, cooldown, db, embed, followup, i18n, index, logconfig, membership, people, retrieve
+from . import adminlog, answer, chat_scope, config, cooldown, db, embed, followup, i18n, index, logconfig, membership, people, retrieve
 from .info import format_info, format_latency, format_stats, last_update
 from .ingest import live
 from .ingest.export import desktop_ids_for
@@ -71,6 +72,7 @@ _ASK_PENDING_SECONDS = 5 * 60
 # In-flight retrieve+answer tasks, cancelled by /cancel.
 _in_flight: dict[tuple[int, int], set[asyncio.Task]] = defaultdict(set)
 _chat_title = ""
+_chat_titles: dict[int, str] = {}
 _resolve_lock = asyncio.Lock()
 _resolve_task: asyncio.Task | None = None
 _resolve_progress: dict[str, int | str] = {}
@@ -128,7 +130,7 @@ async def _periodic_lookback() -> None:
         await asyncio.sleep(hours * 3600)
         log.info("periodic lookback: last %s days", config.UPDATE_LOOKBACK_DAYS)
         try:
-            await index_chats(config.TELEGRAM_CHAT_ID, lookback=config.UPDATE_LOOKBACK_DAYS)
+            await index_chats(_source_chat_ids(), lookback=config.UPDATE_LOOKBACK_DAYS)
         except Exception:
             log.exception("periodic lookback failed")
 
@@ -140,24 +142,52 @@ def _configured_chat() -> int:
     return chat_id
 
 
+def _source_chat_ids() -> list[int]:
+    ids = list(config.TELEGRAM_CHAT_IDS)
+    return ids or [_configured_chat()]
+
+
+def _remember_chat_title(chat_id: int, title: str | None) -> str:
+    global _chat_title
+    label = (title or "").strip() or str(chat_id)
+    _chat_titles[chat_id] = label
+    if chat_id == _configured_chat():
+        _chat_title = label
+    return label
+
+
+def _titles_for(chat_id: int | list[int]) -> dict[int, str]:
+    ids = chat_id if isinstance(chat_id, list) else [chat_id]
+    return {cid: _chat_titles.get(cid, str(cid)) for cid in ids}
+
+
 async def _refresh_chat_title(bot: Bot, message: Message | None = None) -> str:
     """Telegram title of TELEGRAM_CHAT_ID (same source as the startup stats DM)."""
-    global _chat_title
+    main = _configured_chat()
     if (
         message is not None
         and message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
-        and message.chat.id == _configured_chat()
+        and message.chat.id == main
         and message.chat.title
     ):
-        _chat_title = message.chat.title
-        return _chat_title
+        return _remember_chat_title(main, message.chat.title)
     try:
-        chat = await bot.get_chat(_configured_chat())
-        _chat_title = chat.title or str(_configured_chat())
+        chat = await bot.get_chat(main)
+        return _remember_chat_title(main, chat.title)
     except Exception:
         if not _chat_title:
-            _chat_title = str(_configured_chat())
-    return _chat_title
+            _remember_chat_title(main, None)
+        return _chat_titles.get(main, str(main))
+
+
+async def _refresh_source_titles(bot: Bot) -> None:
+    for cid in _source_chat_ids():
+        try:
+            chat = await bot.get_chat(cid)
+            _remember_chat_title(cid, chat.title)
+        except Exception:
+            _remember_chat_title(cid, None)
+            log.warning("cannot reach chat_id=%s", cid)
 
 
 def _ask_key(message: Message) -> tuple[int, int] | None:
@@ -238,13 +268,16 @@ def _span_lines(s: dict, lang: str) -> str:
     return i18n.t(lang, "stats_span", first=first, last=last)
 
 
-def _is_configured_chat(chat_id: int) -> bool:
-    return chat_id == _configured_chat()
+def _is_main_chat(chat_id: int) -> bool:
+    return chat_scope.is_main_chat(chat_id, config.TELEGRAM_CHAT_ID)
 
 
-async def _user_in_configured_chat(bot: Bot, user_id: int) -> bool:
-    """Whether this user is currently a member of TELEGRAM_CHAT_ID."""
-    chat_id = _configured_chat()
+def _is_source_chat(chat_id: int) -> bool:
+    return chat_scope.is_source_chat(chat_id, _source_chat_ids())
+
+
+async def _user_in_chat(bot: Bot, user_id: int, chat_id: int) -> bool:
+    """Whether this user is currently a member of `chat_id` (TTL-cached)."""
     cached = _members.get(user_id, chat_id)
     if cached is not None:
         return cached
@@ -255,6 +288,23 @@ async def _user_in_configured_chat(bot: Bot, user_id: int) -> bool:
         ok = False
     _members.remember(user_id, chat_id, ok)
     return ok
+
+
+async def _user_in_configured_chat(bot: Bot, user_id: int) -> bool:
+    """Whether this user is currently a member of TELEGRAM_CHAT_ID."""
+    return await _user_in_chat(bot, user_id, _configured_chat())
+
+
+async def _search_chats_for(bot: Bot, user_id: int | None) -> list[int]:
+    """Explicit allow-list for one question. Empty means no chats, not all chats."""
+    return await chat_scope.resolve_search_chats(
+        user_id=user_id,
+        main_id=_configured_chat(),
+        configured=_source_chat_ids(),
+        scope=config.SEARCH_CHAT_SCOPE,
+        access=config.SEARCH_CHAT_ACCESS,
+        is_member=lambda uid, cid: _user_in_chat(bot, uid, cid),
+    )
 
 
 async def _lang_for(user_id: int | None) -> str:
@@ -321,7 +371,7 @@ async def _ensure_member(message: Message, bot: Bot) -> bool:
     if user is None:
         return False
     if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
-        return _is_configured_chat(message.chat.id)
+        return _is_main_chat(message.chat.id)
     if await _user_in_configured_chat(bot, user.id):
         return True
     lang = await _lang_for(user.id)
@@ -335,7 +385,7 @@ async def _ensure_member_callback(query: CallbackQuery, bot: Bot) -> bool:
         return False
     chat = query.message.chat if query.message else None
     if chat is not None and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
-        return _is_configured_chat(chat.id)
+        return _is_main_chat(chat.id)
     if await _user_in_configured_chat(bot, user.id):
         return True
     lang = await _lang_for(user.id)
@@ -343,7 +393,13 @@ async def _ensure_member_callback(query: CallbackQuery, bot: Bot) -> bool:
     return False
 
 
-def format_answer(result: answer.Answer, lang: str) -> str:
+def format_answer(
+    result: answer.Answer,
+    lang: str,
+    *,
+    chat_titles: dict[int, str] | None = None,
+    include_chat: bool = False,
+) -> str:
     # Markdown → Telegram HTML, then [W#] → t.me links (brackets survive escaping).
     body = answer.format_answer_body(result)
 
@@ -357,7 +413,12 @@ def format_answer(result: answer.Answer, lang: str) -> str:
         lines = "\n".join(
             f'<a href="{h.link()}">{" ".join(f"[W{i}]" for i in idxs)}</a>'
             f'{" ✓" if was_cited else ""} '
-            f'{html.quote(h.when())} · {html.quote(h.speakers)}'
+            + (
+                f'{html.quote(answer.chat_label(h, chat_titles))} · '
+                if include_chat
+                else ""
+            )
+            + f'{html.quote(h.when())} · {html.quote(h.speakers)}'
             for idxs, h, was_cited in sources
         )
         body += f'\n\n<b>{i18n.t(lang, "sources")}</b>\n' + lines
@@ -375,14 +436,14 @@ def _mark_miss(sender_id, reason="left") -> None:
 
 
 async def _align_export_chat_ids() -> None:
-    """Rewrite a Desktop-export chat id onto TELEGRAM_CHAT_ID if it is still stored."""
-    target = _configured_chat()
+    """Rewrite Desktop-export chat ids onto configured Bot API ids if still stored."""
     moved = 0
-    for old in desktop_ids_for(target):
-        n = await _db(db.remap_chat_id, conn, old, target)
-        if n:
-            log.info("aligning desktop chat_id %s -> Bot API %s (%s messages)", old, target, n)
-            moved += n
+    for target in _source_chat_ids():
+        for old in desktop_ids_for(target):
+            n = await _db(db.remap_chat_id, conn, old, target)
+            if n:
+                log.info("aligning desktop chat_id %s -> Bot API %s (%s messages)", old, target, n)
+                moved += n
     if moved:
         retrieve.invalidate_cache()
         _members.invalidate()
@@ -511,8 +572,11 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
                 await thinking.edit_text(blocked)
                 return
 
+        titles = _titles_for(chat_id)
+        include_chat = len(titles) > 1
+
         def complete():
-            return answer.complete_answer(question, hits)
+            return answer.complete_answer(question, hits, chat_titles=titles)
 
         result = await asyncio.to_thread(complete)
         await _db(answer._record, conn, question, chat_id, result, t0, None, user_id or None)
@@ -520,7 +584,9 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         await _stop_thinking(stop, spinner)
         spinner = None
         await thinking.edit_text(
-            format_answer(result, lang), parse_mode="HTML", disable_web_page_preview=True
+            format_answer(result, lang, chat_titles=titles, include_chat=include_chat),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
         )
     except asyncio.CancelledError:
         log.info("search cancelled user=%s chat=%s", user_id, message.chat.id)
@@ -546,7 +612,8 @@ async def _consume_pending_ask(message: Message) -> bool:
     if not text:
         return False
     _cancel_pending_ask(message)
-    await respond(message, text, _configured_chat())
+    user_id = message.from_user.id if message.from_user else None
+    await respond(message, text, await _search_chats_for(message.bot, user_id))
     return True
 
 
@@ -617,13 +684,17 @@ async def cmd_ask(message: Message, command, bot: Bot) -> None:
     question = (command.args or "").strip()
     if question:
         _cancel_pending_ask(message)
-        await respond(message, question, _configured_chat())
+        user_id = message.from_user.id if message.from_user else None
+        await respond(message, question, await _search_chats_for(bot, user_id))
         return
     _arm_pending_ask(message)
     lang = await _lang_for(message.from_user.id if message.from_user else None)
     name = await _refresh_chat_title(bot, message)
+    prompt = "ask_prompt_all" if (
+        config.SEARCH_CHAT_SCOPE == "all" and len(_source_chat_ids()) > 1
+    ) else "ask_prompt"
     await message.reply(
-        i18n.t(lang, "ask_prompt", name=html.quote(name)),
+        i18n.t(lang, prompt, name=html.quote(name)),
         parse_mode="HTML",
     )
 
@@ -668,14 +739,14 @@ async def cmd_reindex(message: Message, command, bot: Bot) -> None:
     if message.from_user.id not in config.ADMIN_USER_IDS:
         await message.reply(i18n.t(lang, "admins_only"))
         return
-    chat_id = _configured_chat()
+    chat_ids = _source_chat_ids()
     full = (command.args or "").strip().lower() == "full"
     if full:
         await message.reply(i18n.t(lang, "reindex_full"))
-        result = await index_chats(chat_id, full=True)
+        result = await index_chats(chat_ids, full=True)
     else:
         await message.reply(i18n.t(lang, "reindex_recent"))
-        result = await index_chats(chat_id, lookback=config.UPDATE_LOOKBACK_DAYS)
+        result = await index_chats(chat_ids, lookback=config.UPDATE_LOOKBACK_DAYS)
     await message.reply(
         i18n.t(lang, "reindex_done", windows=result["windows"], chats=result["chats"])
     )
@@ -707,37 +778,54 @@ async def _edit_resolve_status(msg: Message, html_text: str) -> None:
         log.debug("resolve status edit failed", exc_info=True)
 
 
-async def _resolve_one(bot: Bot, chat_id: int, uid: int) -> tuple[str, str]:
-    """Look up one member. Returns (ok|miss|error|pause, display_name_or_empty)."""
-    while True:
-        try:
-            member = await bot.get_chat_member(chat_id, uid)
-            user = member.user
-            name = people.name_from_user(user)
-            if not name:
-                await _db(_mark_miss, uid, "left")
-                return "miss", ""
-            await _db(_record_person, uid, name, user.username, "api")
-            return "ok", name
-        except TelegramRetryAfter as e:
-            wait = max(float(getattr(e, "retry_after", 1) or 1), 1.0) + 0.25
-            if wait > config.RESOLVE_MAX_FLOOD_WAIT:
-                _resolve_progress["pause_wait"] = int(wait)
-                log.warning("resolve: flood wait %.0fs too long; pausing", wait)
-                return "pause", ""
-            log.info("resolve: flood wait %.1fs (user %s)", wait, uid)
-            await asyncio.sleep(wait)
-        except (TelegramBadRequest, TelegramForbiddenError) as e:
-            await _db(_mark_miss, uid, people.miss_reason_from_error(str(e)))
-            return "miss", ""
-        except Exception:
-            log.warning("resolve: lookup failed user=%s", uid, exc_info=True)
-            return "error", ""
+async def _resolve_one(bot: Bot, chat_ids: int | list[int], uid: int) -> tuple[str, str]:
+    """Look up one member across chats. Returns (ok|miss|error|pause, name).
+
+    Tries each chat the sender posted in before recording a global miss.
+    """
+    chats = [chat_ids] if isinstance(chat_ids, int) else list(chat_ids)
+    last_miss_reason = "left"
+    saw_error = False
+    for chat_id in chats:
+        while True:
+            try:
+                member = await bot.get_chat_member(chat_id, uid)
+                user = member.user
+                name = people.name_from_user(user)
+                if not name:
+                    last_miss_reason = "left"
+                    break
+                await _db(_record_person, uid, name, user.username, "api")
+                return "ok", name
+            except TelegramRetryAfter as e:
+                wait = max(float(getattr(e, "retry_after", 1) or 1), 1.0) + 0.25
+                if wait > config.RESOLVE_MAX_FLOOD_WAIT:
+                    _resolve_progress["pause_wait"] = int(wait)
+                    log.warning("resolve: flood wait %.0fs too long; pausing", wait)
+                    return "pause", ""
+                log.info("resolve: flood wait %.1fs (user %s chat %s)", wait, uid, chat_id)
+                await asyncio.sleep(wait)
+            except (TelegramBadRequest, TelegramForbiddenError) as e:
+                last_miss_reason = people.miss_reason_from_error(str(e))
+                break
+            except Exception:
+                log.warning("resolve: lookup failed user=%s chat=%s", uid, chat_id, exc_info=True)
+                saw_error = True
+                break
+    if saw_error:
+        return "error", ""
+    await _db(_mark_miss, uid, last_miss_reason)
+    return "miss", ""
 
 
-async def _resolve_job(bot: Bot, chat_id: int, ids: list[int], status_msg: Message, lang: str) -> None:
+async def _resolve_job(
+    bot: Bot,
+    lookups: list[tuple[int, list[int]]],
+    status_msg: Message,
+    lang: str,
+) -> None:
     done = missed = failed = 0
-    pending = len(ids)
+    pending = len(lookups)
     last_name = ""
     last_edit = 0.0
     paused = False
@@ -750,11 +838,11 @@ async def _resolve_job(bot: Bot, chat_id: int, ids: list[int], status_msg: Messa
         )
 
     try:
-        for i, uid in enumerate(ids):
-            outcome, name = await _resolve_one(bot, chat_id, uid)
+        for i, (uid, chat_ids) in enumerate(lookups):
+            outcome, name = await _resolve_one(bot, chat_ids, uid)
             if outcome == "pause":
                 paused = True
-                pending = len(ids) - i
+                pending = len(lookups) - i
                 _resolve_progress["pending"] = pending
                 wait = int(_resolve_progress.get("pause_wait") or 0)
                 await publish("resolve_paused", wait=wait, done=done, pending=pending)
@@ -766,7 +854,7 @@ async def _resolve_job(bot: Bot, chat_id: int, ids: list[int], status_msg: Messa
                 missed += 1
             else:
                 failed += 1
-            pending = len(ids) - i - 1
+            pending = len(lookups) - i - 1
             _resolve_progress.update(
                 done=done, missed=missed, failed=failed, pending=pending, last_name=last_name
             )
@@ -782,8 +870,8 @@ async def _resolve_job(bot: Bot, chat_id: int, ids: list[int], status_msg: Messa
         raise
     finally:
         log.info(
-            "resolve finished chat_id=%s named=%s missed=%s failed=%s pending=%s paused=%s",
-            chat_id, done, missed, failed, pending, paused,
+            "resolve finished chats=%s named=%s missed=%s failed=%s pending=%s paused=%s",
+            _source_chat_ids(), done, missed, failed, pending, paused,
         )
 
 
@@ -808,7 +896,7 @@ async def cmd_resolve(message: Message, command, bot: Bot) -> None:
         await message.reply(i18n.t(lang, "resolve_usage"))
         return
 
-    chat_id = _configured_chat()
+    chat_ids = _source_chat_ids()
     async with _resolve_lock:
         running = _resolve_task is not None and not _resolve_task.done()
         if arg in ("stop", "cancel"):
@@ -827,9 +915,9 @@ async def cmd_resolve(message: Message, command, bot: Bot) -> None:
             return
 
         retry = arg in ("retry", "full")
-        ids = await _db(people.pending_ids, conn, chat_id, retry)
-        if not ids:
-            stats = await _db(people.lookup_stats, conn, chat_id)
+        lookups = await _db(people.pending_lookups, conn, chat_ids, retry)
+        if not lookups:
+            stats = await _db(people.lookup_stats, conn, chat_ids)
             await message.reply(
                 i18n.t(lang, "resolve_none", resolved=stats["resolved"], missed=stats["missed"]),
                 parse_mode="HTML",
@@ -837,10 +925,10 @@ async def cmd_resolve(message: Message, command, bot: Bot) -> None:
             return
 
         status_msg = await message.reply(
-            i18n.t(lang, "resolve_start", n=len(ids)),
+            i18n.t(lang, "resolve_start", n=len(lookups)),
             parse_mode="HTML",
         )
-        _resolve_task = asyncio.create_task(_resolve_job(bot, chat_id, ids, status_msg, lang))
+        _resolve_task = asyncio.create_task(_resolve_job(bot, lookups, status_msg, lang))
 
 
 async def _who_via_get_chat(bot: Bot, uid: int) -> str:
@@ -898,7 +986,7 @@ async def cmd_who(message: Message, command, bot: Bot) -> None:
 
     info = await _db(people.whois, conn, sender_id)
     if not info.get("display_name"):
-        outcome, _name = await _resolve_one(bot, _configured_chat(), sender_id)
+        outcome, _name = await _resolve_one(bot, _source_chat_ids(), sender_id)
         if outcome != "ok":
             await _who_via_get_chat(bot, sender_id)
         info = await _db(people.whois, conn, sender_id)
@@ -923,6 +1011,9 @@ async def _ingest_group_message(message: Message, *, edited: bool = False) -> No
     text = message.text or message.caption
     if not text:
         return
+
+    if message.chat.title:
+        _remember_chat_title(message.chat.id, message.chat.title)
 
     # Always ingest, so history keeps growing whether or not we're addressed.
     await _db(
@@ -951,7 +1042,7 @@ async def _ingest_group_message(message: Message, *, edited: bool = False) -> No
 
 @dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def on_group_message(message: Message, bot: Bot) -> None:
-    if not _is_configured_chat(message.chat.id):
+    if not _is_source_chat(message.chat.id):
         return
     text = message.text or message.caption
     if not text:
@@ -959,18 +1050,22 @@ async def on_group_message(message: Message, bot: Bot) -> None:
 
     await _ingest_group_message(message)
 
+    if not _is_main_chat(message.chat.id):
+        return
+
     if await _consume_pending_ask(message):
         return
 
     if await _mentions_bot(message, bot):
         me = await bot.me()
         question = text.replace(f"@{me.username}", "").strip()
-        await respond(message, question, _configured_chat())
+        user_id = message.from_user.id if message.from_user else None
+        await respond(message, question, await _search_chats_for(bot, user_id))
 
 
 @dp.edited_message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def on_group_edit(message: Message) -> None:
-    if not _is_configured_chat(message.chat.id):
+    if not _is_source_chat(message.chat.id):
         return
     await _ingest_group_message(message, edited=True)
 
@@ -985,7 +1080,8 @@ async def on_private_message(message: Message, bot: Bot) -> None:
         return
     if await _consume_pending_ask(message):
         return
-    await respond(message, message.text, _configured_chat())
+    user_id = message.from_user.id if message.from_user else None
+    await respond(message, message.text, await _search_chats_for(bot, user_id))
 
 
 async def _dm_admin(bot: Bot, uid: int, text: str) -> None:
@@ -1010,20 +1106,15 @@ async def _notify_status(bot: Bot, key: str, **kwargs) -> None:
 
 
 async def _on_startup(bot: Bot) -> None:
-    global _chat_title
     log.info("bot is starting")
     await _notify_status(bot, "bot_starting")
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(logconfig.asyncio_handler)
     await _align_export_chat_ids()
-    try:
-        chat = await bot.get_chat(_configured_chat())
-        title = chat.title or str(_configured_chat())
-    except Exception:
-        title = str(_configured_chat())
-        log.warning("cannot reach TELEGRAM_CHAT_ID=%s", _configured_chat())
-    _chat_title = title
-    log.info("configured chat %s (%s)", _configured_chat(), title)
+    await _refresh_source_titles(bot)
+    title = _chat_titles.get(_configured_chat(), str(_configured_chat()))
+    for cid in _source_chat_ids():
+        log.info("configured chat %s (%s)", cid, _chat_titles.get(cid, cid))
     _admin_errors.attach(loop, lambda text: _notify_admins(bot, text))
     try:
         await bot.set_my_commands(
@@ -1050,21 +1141,25 @@ async def _on_startup(bot: Bot) -> None:
     log.info("bot is up; database %s: %s", config.DB_PATH, s)
     for uid in sorted(config.ADMIN_USER_IDS):
         lang = await _lang_for(uid)
-        await _dm_admin(
-            bot,
-            uid,
-            i18n.t(
-                lang,
-                "bot_up",
-                db=config.DB_PATH,
-                messages=s["messages"],
-                windows=s["windows"],
-                span=_span_lines(s, lang),
-                latency=format_latency(s, lang),
-                title=title,
-                chat_id=_configured_chat(),
-            ),
+        text = i18n.t(
+            lang,
+            "bot_up",
+            db=config.DB_PATH,
+            messages=s["messages"],
+            windows=s["windows"],
+            span=_span_lines(s, lang),
+            latency=format_latency(s, lang),
+            title=title,
+            chat_id=_configured_chat(),
         )
+        extras = [
+            f"{_chat_titles.get(cid, cid)} (`{cid}`)"
+            for cid in _source_chat_ids()
+            if cid != _configured_chat()
+        ]
+        if extras:
+            text += i18n.t(lang, "bot_up_more", chats=", ".join(extras))
+        await _dm_admin(bot, uid, text)
 
 
 async def _on_shutdown(bot: Bot) -> None:

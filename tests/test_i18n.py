@@ -54,6 +54,10 @@ class TestStrings:
         assert i18n.t("ru", "ask_prompt", name="RUPR") == (
             "Какой у вас вопрос по чату RUPR?"
         )
+        assert "other indexed chats" in i18n.t("en", "ask_prompt_all", name="RUPR")
+        assert "другим проиндексированным" in i18n.t(
+            "ru", "ask_prompt_all", name="RUPR"
+        )
 
     def test_quota_wait_format(self):
         assert i18n.t("ru", "wait_seconds", n=5) == "5 с"
@@ -95,6 +99,9 @@ class TestStrings:
             chat_id=-100,
         )
         assert ru.startswith("Бот запущен, статистика:")
+        extra = i18n.t("en", "bot_up_more", chats="Offtopic (`-1002`)")
+        assert extra.startswith("\nalso indexing:")
+        assert "Offtopic" in extra
 
 
 class TestThinking:

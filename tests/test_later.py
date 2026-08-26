@@ -132,6 +132,40 @@ class TestTelegramChatId:
         assert config.parse_telegram_chat_id(" 1495905530 ") == -1001495905530
 
 
+class TestTelegramChatIds:
+    def test_omitted_is_just_main(self):
+        assert config.parse_telegram_chat_ids(None, main=-1001) == [-1001]
+        assert config.parse_telegram_chat_ids("", main=-1001) == [-1001]
+        assert config.parse_telegram_chat_ids(None, main=None) == []
+
+    def test_main_is_first_and_deduped(self):
+        assert config.parse_telegram_chat_ids("-1001 -1002", main=-1001) == [-1001, -1002]
+        assert config.parse_telegram_chat_ids("-1002,-1001", main=-1001) == [-1001, -1002]
+
+    def test_positive_ids_are_normalized(self):
+        assert config.parse_telegram_chat_ids("2, 3", main=-1001) == [-1001, -1002, -1003]
+        assert config.parse_telegram_chat_ids("1 2", main=-1001) == [-1001, -1002]
+
+
+class TestSearchChatConfig:
+    def test_scope_defaults_to_main(self):
+        assert config.parse_search_chat_scope(None) == "main"
+        assert config.parse_search_chat_scope("") == "main"
+        assert config.parse_search_chat_scope(" ALL ") == "all"
+
+    def test_scope_rejects_unknown(self):
+        with pytest.raises(ValueError, match="SEARCH_CHAT_SCOPE"):
+            config.parse_search_chat_scope("related")
+
+    def test_access_defaults_to_members(self):
+        assert config.parse_search_chat_access(None) == "members"
+        assert config.parse_search_chat_access("ALL") == "all"
+
+    def test_access_rejects_unknown(self):
+        with pytest.raises(ValueError, match="SEARCH_CHAT_ACCESS"):
+            config.parse_search_chat_access("admins")
+
+
 class TestMembershipCache:
     def test_ttl_and_invalidate(self):
         c = membership.MembershipCache(10)

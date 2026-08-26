@@ -343,10 +343,25 @@ setup.
 
 - **`TELEGRAM_BOT_TOKEN`** — from @BotFather. Required to run the bot.
   Privacy mode must be **off** or the bot sees no group messages.
-- **`TELEGRAM_CHAT_ID`** — the one supergroup the bot serves. Use the Bot API
-  id (`-100…`). A positive id is stored as `-100<id>`. Search, live ingest,
-  and DM access are all pinned to this chat. `/ask` with no question uses
-  this chat’s Telegram title in the prompt.
+- **`TELEGRAM_CHAT_ID`** — the main/control supergroup the bot serves. Use
+  the Bot API id (`-100…`). A positive id is stored as `-100<id>`. Commands
+  are accepted in this group; DMs are allowed only if `getChatMember` says
+  the sender is in this chat. `/ask` with no question uses this chat’s
+  Telegram title in the prompt.
+- **`TELEGRAM_CHAT_IDS`** — extra source chats (space- or comma-separated
+  Bot API ids). Omitted, the bot indexes and searches only
+  `TELEGRAM_CHAT_ID`. The bot must be a member of each extra chat (an admin
+  is needed for reliable `getChatMember`). Live ingest runs in every
+  configured chat; questions are still asked in the main group or in DM.
+- **`SEARCH_CHAT_SCOPE`** (`main`) — `main` searches only
+  `TELEGRAM_CHAT_ID`. `all` searches every id in `TELEGRAM_CHAT_IDS`
+  (always including the main chat).
+- **`SEARCH_CHAT_ACCESS`** (`members`) — when scope is `all`, `members`
+  keeps secondary chats the asker currently belongs to (Telegram
+  `getChatMember`, TTL-cached; an API error excludes that chat). `all`
+  includes every configured source after the main-chat membership gate.
+  That last setting means a member of the main group can read history from
+  chats they are not in.
 - **`ADMIN_USER_IDS`** — numeric Telegram user ids (space- or
   comma-separated). Those accounts get `Bot is starting`, then
   `Bot started, stats: …` after setup, `Bot is down` DMs and
@@ -365,7 +380,8 @@ setup.
 - **`MEMBERSHIP_CACHE_SECONDS`** (`300`) — how long a "is this user in this
   chat?" Bot API lookup is remembered. DMs (`/start`, `/ask`, `/info`,
   `/settings`, and questions) are declined unless `getChatMember`
-  says the user is in `TELEGRAM_CHAT_ID`. The UI is Russian by default;
+  says the user is in `TELEGRAM_CHAT_ID`. With `SEARCH_CHAT_ACCESS=members`,
+  the same cache filters extra source chats. The UI is Russian by default;
   `/settings` switches between Russian and English (saved per user).
 
 ## Tests
