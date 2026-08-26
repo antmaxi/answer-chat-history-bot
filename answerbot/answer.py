@@ -30,6 +30,8 @@ Rules:
 CITATION = re.compile(r"\[W(\d+)\]")
 # [W3], [W3](url), or [W3] (url) — models sometimes emit a markdown/parenthetical link.
 CITATION_MARKUP = re.compile(r"\[W(\d+)\](?:\s*\(\s*https?://[^)]+\s*\))?")
+# Telegram HTML has no color tags; this emoji is the green tick.
+CITED_TICK = " ✅"
 
 _OUTER_FENCE = re.compile(
     r"\A\s*```(?:markdown|md)?\s*\n(.*)\n```\s*\Z",
@@ -100,7 +102,7 @@ class Answer:
     def sources_block(self) -> str:
         return "\n".join(
             f"{' '.join(f'[W{i}]' for i in idxs)}"
-            f"{' ✓' if was_cited else ''} {h.when()} · {h.speakers} · {h.link()}"
+            f"{CITED_TICK if was_cited else ''} {h.when()} · {h.speakers} · {h.link()}"
             for idxs, h, was_cited in self.grouped_sources()
         )
 
@@ -155,7 +157,7 @@ def linkify_citations(text: str, hits: list[retrieve.Hit]) -> str:
     def repl(m: re.Match) -> str:
         i = int(m.group(1))
         if 1 <= i <= len(hits):
-            return f'<a href="{hits[i - 1].link()}">[W{i}]</a>'
+            return f'<b><a href="{hits[i - 1].link()}">[W{i}]</a></b>'
         return m.group(0)
 
     return CITATION_MARKUP.sub(repl, text)
@@ -164,6 +166,29 @@ def linkify_citations(text: str, hits: list[retrieve.Hit]) -> str:
 def format_answer_body(result: Answer) -> str:
     """LLM Markdown as Telegram HTML, with [W#] turned into t.me links."""
     return linkify_citations(markdown_to_html(result.text), result.hits)
+
+
+def format_sources_html(
+    result: Answer,
+    *,
+    chat_titles: dict[int, str] | None = None,
+    include_chat: bool = False,
+) -> str:
+    """Telegram HTML source list. Cited windows get a bold link and a green tick."""
+    lines = []
+    for idxs, h, was_cited in result.grouped_sources():
+        labels = " ".join(f"[W{i}]" for i in idxs)
+        link = f'<a href="{h.link()}">{labels}</a>'
+        if was_cited:
+            link = f"<b>{link}</b>"
+        tick = CITED_TICK if was_cited else ""
+        chat = ""
+        if include_chat:
+            chat = f"{html_lib.escape(chat_label(h, chat_titles), quote=False)} · "
+        when = html_lib.escape(h.when(), quote=False)
+        speakers = html_lib.escape(h.speakers, quote=False)
+        lines.append(f"{link}{tick} {chat}{when} · {speakers}")
+    return "\n".join(lines)
 
 
 def chat_label(hit: retrieve.Hit, chat_titles: dict[int, str] | None = None) -> str:

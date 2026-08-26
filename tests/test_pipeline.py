@@ -21,6 +21,7 @@ from answerbot.answer import (
     chat_label,
     complete_answer,
     format_answer_body,
+    format_sources_html,
     markdown_to_html,
 )
 from answerbot.index import build_windows, render
@@ -258,9 +259,9 @@ class TestAnswerCitations:
     def test_sources_block_lists_every_result_and_marks_cited(self):
         a = Answer("answer [W1] and a hallucinated [W9]", [hit(1), hit(2)])
         block = a.sources_block()
-        assert "[W1] ✓" in block          # cited windows get a check
+        assert "[W1] ✅" in block         # cited windows get a green check
         assert "[W2]" in block            # every retrieved window is linked...
-        assert "[W2] ✓" not in block      # ...but not marked cited
+        assert "[W2] ✅" not in block     # ...but not marked cited
         assert "W9" not in block          # out-of-range citation is ignored
         assert block.count("https://t.me/c/") == 2  # a link per result
 
@@ -301,9 +302,27 @@ class TestAnswerCitations:
         ]
         block = a.sources_block()
         assert block.count("https://t.me/c/") == 2
-        assert "[W1] [W2] ✓" in block
+        assert "[W1] [W2] ✅" in block
         assert "[W3]" in block
-        assert "[W3] ✓" not in block
+        assert "[W3] ✅" not in block
+
+    def test_sources_html_bolds_cited_and_uses_green_tick(self):
+        a = Answer("see [W2]", [hit(1), hit(2)])
+        html = format_sources_html(a)
+        assert f'<b><a href="{hit(2).link()}">[W2]</a></b> ✅' in html
+        assert f'<a href="{hit(1).link()}">[W1]</a>' in html
+        assert f'<b><a href="{hit(1).link()}">[W1]</a></b>' not in html
+
+    def test_sources_html_includes_chat_label_when_asked(self):
+        a = Answer("see [W1]", [Hit(1, 11, 1, 1, 0, 0, "Anna", "body", 0.1)])
+        html = format_sources_html(a, chat_titles={11: "Main"}, include_chat=True)
+        assert "Main · " in html
+
+    def test_sources_html_escapes_speakers(self):
+        a = Answer("see [W1]", [Hit(1, 1, 1, 1, 0, 0, "A <B> & C", "body", 0.1)])
+        html = format_sources_html(a)
+        assert "A &lt;B&gt; &amp; C" in html
+        assert "A <B>" not in html
 
 
 class TestAnswerMarkdown:
@@ -325,15 +344,15 @@ class TestAnswerMarkdown:
         assert "<b>без пермита</b>" in body
         assert "<b>Revolut и Wise</b>" in body
         assert "<b>from–until меньше 90 дней</b>" in body
-        assert f'<a href="{hit(3).link()}">[W3]</a>' in body
+        assert f'<b><a href="{hit(3).link()}">[W3]</a></b>' in body
         assert "**" not in body
 
     def test_parenthetical_citation_url_is_replaced_with_source_link(self):
         text = "advice [W3] (https://evil.example/x) and [W2](https://evil.example/y)"
         body = format_answer_body(Answer(text, [hit(1), hit(2), hit(3)]))
         assert "evil.example" not in body
-        assert f'<a href="{hit(3).link()}">[W3]</a>' in body
-        assert f'<a href="{hit(2).link()}">[W2]</a>' in body
+        assert f'<b><a href="{hit(3).link()}">[W3]</a></b>' in body
+        assert f'<b><a href="{hit(2).link()}">[W2]</a></b>' in body
 
     def test_markdown_link_and_code_and_italic(self):
         html = markdown_to_html("see [Revolut](https://revolut.com) and `IBAN` vs *maybe*")
