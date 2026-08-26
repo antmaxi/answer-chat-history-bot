@@ -843,6 +843,72 @@ async def cmd_resolve(message: Message, command, bot: Bot) -> None:
         _resolve_task = asyncio.create_task(_resolve_job(bot, chat_id, ids, status_msg, lang))
 
 
+async def _who_via_get_chat(bot: Bot, uid: int) -> str:
+    """Fallback when getChatMember cannot see the user (left, or never in the group)."""
+    try:
+        chat = await bot.get_chat(uid)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        return ""
+    except Exception:
+        log.debug("who: getChat failed user=%s", uid, exc_info=True)
+        return ""
+    name = people.name_from_user(chat)
+    if not name:
+        return ""
+    await _db(_record_person, uid, name, getattr(chat, "username", None), "api")
+    return name
+
+
+@dp.message(Command("who"))
+async def cmd_who(message: Message, command, bot: Bot) -> None:
+    """Admin: look up a display name / @username from a telegram id (or User N)."""
+    if not await _ensure_member(message, bot):
+        return
+    _cancel_pending_ask(message)
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
+    if not message.from_user or message.from_user.id not in config.ADMIN_USER_IDS:
+        await message.reply(i18n.t(lang, "admins_only"))
+        return
+
+    arg = (command.args or "").strip()
+    sender_id: int | None = None
+    if arg:
+        parsed = people.parse_who_arg(arg)
+        if parsed is None:
+            await message.reply(i18n.t(lang, "who_usage"))
+            return
+        kind, value = parsed
+        if kind == "alias":
+            sender_id = await _db(people.sender_id_for_alias, conn, value)
+            if sender_id is None:
+                await message.reply(i18n.t(lang, "who_alias_not_found", n=value))
+                return
+        else:
+            sender_id = value
+    else:
+        reply = message.reply_to_message
+        user = reply.from_user if reply is not None else None
+        if user is None:
+            await message.reply(i18n.t(lang, "who_usage"))
+            return
+        sender_id = user.id
+        name = people.name_from_user(user)
+        if name:
+            await _db(_record_person, sender_id, name, user.username, "live")
+
+    info = await _db(people.whois, conn, sender_id)
+    if not info.get("display_name"):
+        outcome, _name = await _resolve_one(bot, _configured_chat(), sender_id)
+        if outcome != "ok":
+            await _who_via_get_chat(bot, sender_id)
+        info = await _db(people.whois, conn, sender_id)
+
+    if not people.who_has_local_info(info):
+        await message.reply(i18n.t(lang, "who_not_found", id=sender_id))
+        return
+    await message.reply(people.format_who(lang, info), parse_mode="HTML")
+
+
 # --- Group messages -------------------------------------------------------
 
 async def _mentions_bot(message: Message, bot: Bot) -> bool:

@@ -28,10 +28,12 @@ class TestStrings:
             text = i18n.t(lang, "help")
             assert "/stats" not in text
             assert "/reindex" not in text
+            assert "/who" not in text
             assert "/settings" in text
             assert "/info" in text
             assert "/cancel" in text
         assert "/stats" in i18n.t("en", "help_admin")
+        assert "/who" in i18n.t("en", "help_admin")
 
     def test_settings_text_shows_current_language(self):
         ru = i18n.settings_text("ru")
@@ -129,3 +131,4 @@ class TestCommandSpecs:
             visible = [c for c in cmds if c not in i18n.ADMIN_COMMANDS]
             assert visible == ["ask", "cancel", "settings", "info", "help"]
             assert "stats" in i18n.ADMIN_COMMANDS
+            assert "who" in i18n.ADMIN_COMMANDS

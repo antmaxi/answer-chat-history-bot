@@ -15,11 +15,12 @@ stable "User N" aliases unless SPEAKER_LABEL=export, which opts back into the
 exporter's contact labels.
 """
 
+import html
 import re
 import sqlite3
 import time
 
-from . import config, logconfig
+from . import config, i18n, logconfig
 
 # Higher wins; a live name won't overwrite one you set by hand.
 _TRUST = {"live": 0, "api": 1, "manual": 2}
@@ -218,6 +219,98 @@ def ensure_aliases(conn: sqlite3.Connection, sender_ids) -> None:
 
 def alias_map(conn: sqlite3.Connection) -> dict[int, int]:
     return {r["sender_id"]: r["ordinal"] for r in conn.execute("SELECT sender_id, ordinal FROM aliases")}
+
+
+_WHO_ALIAS = re.compile(r"(?i)^(?:user\s*#?\s*|\#)(\d+)$")
+_WHO_ID = re.compile(r"^-?\d+$")
+
+
+def parse_who_arg(arg: str) -> tuple[str, int] | None:
+    """Parse `/who` input as ('id', telegram_id) or ('alias', ordinal)."""
+    text = (arg or "").strip()
+    if not text:
+        return None
+    m = _WHO_ALIAS.match(text)
+    if m:
+        n = int(m.group(1))
+        return ("alias", n) if n > 0 else None
+    if _WHO_ID.match(text):
+        n = int(text)
+        return ("id", n) if n != 0 else None
+    return None
+
+
+def sender_id_for_alias(conn: sqlite3.Connection, ordinal: int) -> int | None:
+    row = conn.execute("SELECT sender_id FROM aliases WHERE ordinal=?", (ordinal,)).fetchone()
+    return int(row["sender_id"]) if row else None
+
+
+def whois(conn: sqlite3.Connection, sender_id: int) -> dict:
+    """Local facts about a sender: public name, @username, User N alias, export label."""
+    person = conn.execute(
+        "SELECT display_name, username, source FROM people WHERE sender_id=?",
+        (sender_id,),
+    ).fetchone()
+    alias = conn.execute(
+        "SELECT ordinal FROM aliases WHERE sender_id=?", (sender_id,)
+    ).fetchone()
+    export = conn.execute(
+        """SELECT sender FROM messages
+           WHERE sender_id=? AND sender IS NOT NULL AND sender != ''
+           ORDER BY ts DESC LIMIT 1""",
+        (sender_id,),
+    ).fetchone()
+    messages = conn.execute(
+        "SELECT count(*) FROM messages WHERE sender_id=?", (sender_id,)
+    ).fetchone()[0]
+    display_name = person["display_name"] if person else None
+    export_name = export["sender"] if export else None
+    if export_name and display_name and export_name == display_name:
+        export_name = None
+    return {
+        "sender_id": sender_id,
+        "display_name": display_name,
+        "username": (person["username"] or None) if person else None,
+        "source": person["source"] if person else None,
+        "alias": int(alias["ordinal"]) if alias else None,
+        "export_name": export_name,
+        "messages": int(messages or 0),
+    }
+
+
+def format_who(lang: str, info: dict) -> str:
+    """HTML body for the admin `/who` reply. Names are escaped for parse_mode."""
+    lines = [i18n.t(lang, "who_id", id=info["sender_id"])]
+    name = info.get("display_name")
+    if name:
+        lines.append(i18n.t(lang, "who_name", name=html.escape(name)))
+    username = info.get("username")
+    if username:
+        handle = str(username).lstrip("@")
+        lines.append(i18n.t(lang, "who_username", username=html.escape(handle)))
+    alias = info.get("alias")
+    if alias:
+        lines.append(i18n.t(lang, "who_alias", n=alias))
+    export_name = info.get("export_name")
+    if export_name and not name:
+        lines.append(i18n.t(lang, "who_export", name=html.escape(export_name)))
+    source = info.get("source")
+    if source:
+        lines.append(i18n.t(lang, "who_source", source=source))
+    messages = int(info.get("messages") or 0)
+    if messages:
+        lines.append(i18n.t(lang, "who_messages", n=messages))
+    return "\n".join(lines)
+
+
+def who_has_local_info(info: dict) -> bool:
+    return bool(
+        info.get("display_name")
+        or info.get("username")
+        or info.get("alias")
+        or info.get("export_name")
+        or info.get("messages")
+    )
 
 
 def known_speakers(conn: sqlite3.Connection) -> list[str]:

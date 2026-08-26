@@ -105,6 +105,8 @@ by that id:
   Telegram flood limits, and remembers who left so the next run continues
   instead of retrying all ~2k ids. `/resolve` while running shows progress;
   `/resolve stop` pauses; `/resolve retry` tries people previously skipped.
+  `/who <id>` looks up one person (telegram id, `User N`, or reply to a
+  message) without running the backfill.
   Names keep emoji and styled unicode (custom premium emoji arrive as the API's
   fallback character). Only people the API can still see can be resolved — the
   bot should be a group **admin** (no extra rights needed) for that. Then
@@ -173,8 +175,9 @@ of weeks are rebuilt so recent edits self-heal. Asking a question does **not**
 reindex — only those schedules (and `/reindex`) do. `/info` (includes index
 size), `/settings` (language: Russian by default, or English), `/cancel`
 (stop a running search), and (for admins) `/stats`, `/reindex` /
-`/reindex full`, `/resolve` (background name lookup; `retry` / `stop`) are
-available. Non-admins see only `/ask`, `/cancel`,
+`/reindex full`, `/resolve` (background name lookup; `retry` / `stop`),
+and `/who <id>` (name from a telegram user id, or `User N`, or reply to a
+message) are available. Non-admins see only `/ask`, `/cancel`,
 `/settings`, `/info`, and `/help` in the command menu.
 
 ## Switching the answer model

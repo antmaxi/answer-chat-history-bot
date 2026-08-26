@@ -10,7 +10,7 @@ LANG_NATIVE_NAME: dict[str, str] = {
     "ru": "Русский",
     "en": "English",
 }
-ADMIN_COMMANDS = frozenset({"stats", "reindex", "resolve"})
+ADMIN_COMMANDS = frozenset({"stats", "reindex", "resolve", "who"})
 
 COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
     "ru": [
@@ -20,6 +20,7 @@ COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
         ("stats", "Индекс и вопросы"),
         ("reindex", "Обновить индекс"),
         ("resolve", "Имена участников"),
+        ("who", "Имя по id"),
         ("info", "ℹ️ О боте"),
         ("help", "Как пользоваться ботом"),
     ],
@@ -30,6 +31,7 @@ COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
         ("stats", "Index and questions"),
         ("reindex", "Rebuild recent index"),
         ("resolve", "Fix member names"),
+        ("who", "Name from user id"),
         ("info", "ℹ️ About the bot"),
         ("help", "How to use the bot"),
     ],
@@ -44,7 +46,8 @@ T: dict[str, dict[str, str]] = {
             "Commands: /ask, /ask <question>, /cancel, /settings, /info"
         ),
         "help_admin": (
-            "\nAdmins: /stats, /reindex (recent), /reindex full, /resolve (names; retry/stop)"
+            "\nAdmins: /stats, /reindex (recent), /reindex full, "
+            "/resolve (names; retry/stop), /who <id>"
         ),
         "ask_empty": "Ask me a question about this chat's history.",
         "ask_prompt": "What is your question on the chat {name}?",
@@ -96,6 +99,16 @@ T: dict[str, dict[str, str]] = {
             "<b>{done}</b> named so far, <b>{pending}</b> remaining. /resolve to continue."
         ),
         "resolve_usage": "Usage: /resolve, /resolve retry, /resolve stop",
+        "who_usage": "Usage: /who <user_id> — or reply to a message with /who",
+        "who_not_found": "No name for id {id}.",
+        "who_alias_not_found": "No person for User {n}.",
+        "who_id": "id: <code>{id}</code>",
+        "who_name": "name: {name}",
+        "who_username": "username: @{username}",
+        "who_alias": "alias: User {n}",
+        "who_export": "export label: {name}",
+        "who_source": "source: {source}",
+        "who_messages": "messages: {n}",
         "stats": (
             "messages: {messages}\nwindows: {windows}\n"
             "embedded: {embedded}\nchats: {chats}"
@@ -153,7 +166,8 @@ T: dict[str, dict[str, str]] = {
             "Команды: /ask, /ask <вопрос>, /cancel, /settings, /info"
         ),
         "help_admin": (
-            "\nАдминам: /stats, /reindex (недавнее), /reindex full, /resolve (имена; retry/stop)"
+            "\nАдминам: /stats, /reindex (недавнее), /reindex full, "
+            "/resolve (имена; retry/stop), /who <id>"
         ),
         "ask_empty": "Задайте вопрос об истории этого чата.",
         "ask_prompt": "Какой у вас вопрос по чату {name}?",
@@ -205,6 +219,16 @@ T: dict[str, dict[str, str]] = {
             "Пока <b>{done}</b> имён, осталось <b>{pending}</b>. /resolve чтобы продолжить."
         ),
         "resolve_usage": "Использование: /resolve, /resolve retry, /resolve stop",
+        "who_usage": "Использование: /who <id> — или ответьте /who на сообщение",
+        "who_not_found": "Нет имени для id {id}.",
+        "who_alias_not_found": "Нет человека User {n}.",
+        "who_id": "id: <code>{id}</code>",
+        "who_name": "имя: {name}",
+        "who_username": "username: @{username}",
+        "who_alias": "псевдоним: User {n}",
+        "who_export": "метка экспорта: {name}",
+        "who_source": "источник: {source}",
+        "who_messages": "сообщений: {n}",
         "stats": (
             "сообщений: {messages}\nокон: {windows}\n"
             "с эмбеддингами: {embedded}\nчатов: {chats}"

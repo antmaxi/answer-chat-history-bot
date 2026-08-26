@@ -553,6 +553,53 @@ class TestPeopleNames:
         assert second[100] == first[100]              # unchanged
         assert second[999] == 4                        # next free ordinal
 
+    def test_parse_who_arg(self):
+        assert people.parse_who_arg(" 12345 ") == ("id", 12345)
+        assert people.parse_who_arg("User 3") == ("alias", 3)
+        assert people.parse_who_arg("user#12") == ("alias", 12)
+        assert people.parse_who_arg("#7") == ("alias", 7)
+        assert people.parse_who_arg("0") is None
+        assert people.parse_who_arg("User 0") is None
+        assert people.parse_who_arg("@anna") is None
+        assert people.parse_who_arg("") is None
+
+    def test_whois_and_format(self, conn):
+        people.record(conn, 99, "🔥 Anna", "anna_bot", "api")
+        people.ensure_aliases(conn, [99])
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, sender_id, text) "
+            "VALUES (1, 1, 1, 'Private Label', 99, 'hi')"
+        )
+        conn.commit()
+        info = people.whois(conn, 99)
+        assert info["display_name"] == "🔥 Anna"
+        assert info["username"] == "anna_bot"
+        assert info["alias"] == 1
+        assert info["messages"] == 1
+        assert info["export_name"] == "Private Label"
+        text = people.format_who("en", info)
+        assert "99" in text
+        assert "🔥 Anna" in text
+        assert "@anna_bot" in text
+        assert "User 1" in text
+        assert "Private Label" not in text
+        assert "&lt;" in people.format_who("en", {**info, "display_name": "<b>x</b>"})
+        missing = people.whois(conn, 123)
+        assert not people.who_has_local_info(missing)
+        assert people.sender_id_for_alias(conn, 1) == 99
+        assert people.sender_id_for_alias(conn, 99) is None
+
+    def test_whois_export_only(self, conn):
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, sender_id, text) "
+            "VALUES (1, 1, 1, 'Private Label', 7, 'hi')"
+        )
+        conn.commit()
+        info = people.whois(conn, 7)
+        assert info["display_name"] is None
+        assert info["export_name"] == "Private Label"
+        assert "Private Label" in people.format_who("en", info)
+
     def test_render_id_mode_shows_no_names_or_real_ids(self):
         msgs = [
             {"ts": 0, "sender": "Vutyan нейроэкономика Витя", "sender_id": 7, "text": "hi"},
