@@ -843,6 +843,7 @@ async def cmd_reindex(message: Message, command, bot: Bot) -> None:
             lambda: i18n.reindex_pct(int(state.get("done") or 0), state.get("total")),
         )
     )
+    done = i18n.t(lang, "reindex_failed")
     try:
         if full:
             result = await index_chats(chat_ids, full=True, progress=state)
@@ -850,15 +851,17 @@ async def cmd_reindex(message: Message, command, bot: Bot) -> None:
             result = await index_chats(
                 chat_ids, lookback=config.UPDATE_LOOKBACK_DAYS, progress=state
             )
+        done = i18n.t(
+            lang,
+            "reindex_done",
+            windows=result["windows"],
+            chats=result["chats"],
+            elapsed=i18n.fmt_elapsed(time.monotonic() - started),
+        )
+    except Exception:
+        log.exception("reindex failed")
     finally:
         await _stop_thinking(stop, ticker)
-    done = i18n.t(
-        lang,
-        "reindex_done",
-        windows=result["windows"],
-        chats=result["chats"],
-        elapsed=i18n.fmt_elapsed(time.monotonic() - started),
-    )
     try:
         await status.edit_text(done)
     except Exception:

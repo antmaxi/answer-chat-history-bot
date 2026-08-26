@@ -160,6 +160,10 @@ class TestProgress:
         assert "3 окон" in ru
         assert "1:05" in ru
 
+    def test_reindex_failed(self):
+        assert i18n.t("en", "reindex_failed") == "Something went wrong updating the index."
+        assert i18n.t("ru", "reindex_failed") == "Не получилось обновить индекс."
+
 
 class TestCommandSpecs:
     def test_same_commands_in_both_languages(self):

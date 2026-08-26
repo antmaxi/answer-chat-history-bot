@@ -66,6 +66,7 @@ T: dict[str, dict[str, str]] = {
         "reindex_full": "Full reindex…",
         "reindex_recent": "Updating recent history…",
         "reindex_done": "Done: {windows} windows across {chats} chat(s) in {elapsed}.",
+        "reindex_failed": "Something went wrong updating the index.",
         "resolve_start": (
             "Resolving <b>{n}</b> people in the background — Telegram rate-limits "
             "lookups, so this can take a while.\n"
@@ -188,6 +189,7 @@ T: dict[str, dict[str, str]] = {
         "reindex_full": "Полная переиндексация…",
         "reindex_recent": "Обновляю недавнюю историю…",
         "reindex_done": "Готово: {windows} окон в {chats} чат(ах) за {elapsed}.",
+        "reindex_failed": "Не получилось обновить индекс.",
         "resolve_start": (
             "Уточняю <b>{n}</b> человек в фоне — Telegram ограничивает частоту запросов, "
             "это может занять время.\n"
