@@ -140,6 +140,7 @@ class TestFormatInfo:
         assert "messages: 0" in text
         assert "first:" not in text
         assert "questions:" not in text
+        assert "last used by others:" not in text
 
     def test_format_stats_includes_question_counts_when_requested(self):
         s = {
@@ -169,6 +170,7 @@ class TestFormatInfo:
         assert "last day: 2 (admin: 1, others: 1)" in text
         assert "last week: 5 (admin: 1, others: 4)" in text
         assert "last month: 9 (admin: 2, others: 7)" in text
+        assert "last used by others: never" in text
         assert "ask time:" in text
         assert "last day: 1.5s ± 0.7s (min 1.0s / max 2.0s)" in text
         ru = format_stats(s, "ru", questions=True)
@@ -176,8 +178,58 @@ class TestFormatInfo:
         assert "за сутки: 2 (админы: 1, остальные: 1)" in ru
         assert "за неделю: 5 (админы: 1, остальные: 4)" in ru
         assert "за месяц: 9 (админы: 2, остальные: 7)" in ru
+        assert "последний запрос остальных: никогда" in ru
         assert "время запроса:" in ru
         assert "нет данных" in ru
+
+    def test_format_stats_last_user_ask_timestamp(self):
+        stamp = "2026-04-04 14:00:00 UTC+02:00"
+        text = format_stats(
+            {
+                "messages": 0,
+                "windows": 0,
+                "embedded": 0,
+                "chats": 0,
+                "last_user_ask": stamp,
+            },
+            "en",
+            questions=True,
+        )
+        assert f"last used by others: {stamp}" in text
+        ru = format_stats(
+            {
+                "messages": 0,
+                "windows": 0,
+                "embedded": 0,
+                "chats": 0,
+                "last_user_ask": stamp,
+            },
+            "ru",
+            questions=True,
+        )
+        assert f"последний запрос остальных: {stamp}" in ru
+
+    def test_format_stats_last_user_in_use_now(self):
+        text = format_stats(
+            {
+                "messages": 0,
+                "windows": 0,
+                "embedded": 0,
+                "chats": 0,
+                "last_user_ask": "2026-04-04 14:00:00 UTC+02:00",
+                "user_in_use": True,
+            },
+            "en",
+            questions=True,
+        )
+        assert "last used by others: in use now" in text
+        assert "last used by others: 2026-04-04" not in text
+        ru = format_stats(
+            {"messages": 0, "windows": 0, "embedded": 0, "chats": 0, "user_in_use": True},
+            "ru",
+            questions=True,
+        )
+        assert "последний запрос остальных: сейчас используется" in ru
 
     def test_format_info_omits_question_counts(self, monkeypatch):
         monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
@@ -195,6 +247,7 @@ class TestFormatInfo:
         assert "questions:" not in text
         assert "last day:" not in text
         assert "ask time:" not in text
+        assert "last used by others:" not in text
 
     def test_cursor_includes_zero_retention(self, monkeypatch):
         monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")

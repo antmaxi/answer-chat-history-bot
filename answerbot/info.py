@@ -123,8 +123,19 @@ def format_stats(s: dict, lang: str | None = None, *, questions: bool = False) -
             month_admin=s.get("questions_month_admin", 0),
             month_other=s.get("questions_month_other", 0),
         )
+        text += i18n.t(lang, "stats_last_user", when=_last_user_when(s, lang))
         text += format_latency(s, lang)
     return text
+
+
+def _last_user_when(s: dict, lang: str) -> str:
+    """Live non-admin use, else last completed non-admin ask, else never."""
+    if s.get("user_in_use"):
+        return i18n.t(lang, "stats_last_user_now")
+    last = s.get("last_user_ask")
+    if last:
+        return last
+    return i18n.t(lang, "stats_last_user_never")
 
 
 _PROVIDER_LABELS = {

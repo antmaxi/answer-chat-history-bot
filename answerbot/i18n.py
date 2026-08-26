@@ -115,6 +115,9 @@ T: dict[str, dict[str, str]] = {
         ),
         "stats_latency_range": "{median} ± {std} (min {min} / max {max})",
         "stats_latency_none": "n/a",
+        "stats_last_user": "\nlast used by others: {when}",
+        "stats_last_user_now": "in use now",
+        "stats_last_user_never": "never",
         "bot_starting": "Bot is starting",
         "bot_up": (
             "Bot started, stats:\n{db}: {messages} messages, {windows} windows{span}"
@@ -221,6 +224,9 @@ T: dict[str, dict[str, str]] = {
         ),
         "stats_latency_range": "{median} ± {std} (мин {min} / макс {max})",
         "stats_latency_none": "нет данных",
+        "stats_last_user": "\nпоследний запрос остальных: {when}",
+        "stats_last_user_now": "сейчас используется",
+        "stats_last_user_never": "никогда",
         "bot_starting": "Бот запускается",
         "bot_up": (
             "Бот запущен, статистика:\n{db}: {messages} сообщений, {windows} окон{span}"

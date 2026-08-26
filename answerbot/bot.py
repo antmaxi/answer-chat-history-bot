@@ -220,6 +220,17 @@ def _cancel_in_flight(key: tuple[int, int]) -> int:
     return n
 
 
+def _non_admin_in_flight() -> bool:
+    """True if a non-admin retrieve+answer is running."""
+    admins = config.ADMIN_USER_IDS
+    for (_chat_id, user_id), tasks in _in_flight.items():
+        if user_id in admins:
+            continue
+        if any(not t.done() for t in tasks):
+            return True
+    return False
+
+
 def _span_lines(s: dict, lang: str) -> str:
     first, last = s.get("first_message"), s.get("last_message")
     if not first or not last:
@@ -644,6 +655,7 @@ async def cmd_stats(message: Message, bot: Bot) -> None:
         await message.reply(i18n.t(lang, "admins_only"))
         return
     s = await _db(db.stats, conn)
+    s["user_in_use"] = _non_admin_in_flight()
     await message.reply(format_stats(s, lang, questions=True))
 
 

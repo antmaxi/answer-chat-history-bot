@@ -294,6 +294,26 @@ def _admin_predicate(admin_ids: set[int] | frozenset[int]) -> tuple[str, tuple[i
     return f"user_id IN ({placeholders})", ids
 
 
+def _non_admin_predicate(admin_ids: set[int] | frozenset[int]) -> tuple[str, tuple[int, ...]]:
+    """SQL fragment matching query_log rows not asked by current admins.
+
+    NULL user_id (CLI / logs from before that column) counts as others.
+    Empty admin set → matches every row.
+    """
+    ids = tuple(sorted(int(x) for x in admin_ids))
+    if not ids:
+        return "1", ()
+    placeholders = ",".join("?" * len(ids))
+    return f"(user_id IS NULL OR user_id NOT IN ({placeholders}))", ids
+
+
+def _last_non_admin_ask_ts(conn: sqlite3.Connection) -> int | None:
+    pred, params = _non_admin_predicate(config.ADMIN_USER_IDS)
+    row = conn.execute(f"SELECT MAX(ts) FROM query_log WHERE {pred}", params).fetchone()
+    ts = row[0] if row else None
+    return int(ts) if ts is not None else None
+
+
 def _question_windows(conn: sqlite3.Connection, now_ts: int) -> dict[str, int]:
     """Rolling 24h / 7d / 30d question counts, split by current ADMIN_USER_IDS."""
     cuts = (now_ts - 86400, now_ts - 7 * 86400, now_ts - 30 * 86400)
@@ -374,6 +394,8 @@ def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
     (CLI / logs from before that column) count as others.
     Ask-time summaries (median ± sample std, min/max) use `latency_ms` from
     the same windows; missing when a window has no timed rows.
+    last_user_ask is the latest non-admin query_log timestamp (same rules as
+    the others split); None when QUERY_LOG has never recorded one.
     """
     def count(table: str) -> int:
         return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
@@ -387,6 +409,7 @@ def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
         "chats": count("(SELECT DISTINCT chat_id FROM messages)"),
         "first_message": _iso_utc(first_ts),
         "last_message": _iso_utc(last_ts),
+        "last_user_ask": _iso_utc(_last_non_admin_ask_ts(conn)),
         **_question_windows(conn, now_ts),
         **_latency_windows(conn, now_ts),
     }

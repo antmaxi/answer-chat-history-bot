@@ -213,6 +213,7 @@ class TestSchemaMigrate:
         assert empty["latency_day"] is None
         assert empty["latency_week"] is None
         assert empty["latency_month"] is None
+        assert empty["last_user_ask"] is None
         conn.execute(
             "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 1, 1700000000, 'A', 'old')"
         )
@@ -281,6 +282,54 @@ class TestSchemaMigrate:
         assert s["questions_month"] == 5
         assert s["questions_month_admin"] == 2
         assert s["questions_month_other"] == 3
+
+    def test_stats_last_user_ask_skips_admins(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "ADMIN_USER_IDS", {10})
+        monkeypatch.setattr(config, "DISPLAY_UTC_OFFSET_HOURS", 0)
+        now = 1_800_000_000
+        rows = [
+            (now - 7200, "other older", 99),
+            (now - 3600, "other newer", 99),
+            (now - 60, "admin later", 10),
+        ]
+        conn.executemany(
+            "INSERT INTO query_log (ts, question, window_ids, cited_ids, user_id) "
+            "VALUES (?, ?, '[]', '[]', ?)",
+            rows,
+        )
+        conn.commit()
+        s = db.stats(conn, now=now)
+        assert s["last_user_ask"] == "2027-01-15 07:00:00 UTC+00:00"
+
+    def test_stats_last_user_ask_treats_null_user_as_other(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "ADMIN_USER_IDS", {10})
+        monkeypatch.setattr(config, "DISPLAY_UTC_OFFSET_HOURS", 0)
+        now = 1_800_000_000
+        conn.execute(
+            "INSERT INTO query_log (ts, question, window_ids, cited_ids, user_id) "
+            "VALUES (?, 'cli', '[]', '[]', NULL)",
+            (now - 120,),
+        )
+        conn.execute(
+            "INSERT INTO query_log (ts, question, window_ids, cited_ids, user_id) "
+            "VALUES (?, 'admin', '[]', '[]', 10)",
+            (now - 60,),
+        )
+        conn.commit()
+        s = db.stats(conn, now=now)
+        assert s["last_user_ask"] == "2027-01-15 07:58:00 UTC+00:00"
+
+    def test_stats_last_user_ask_none_when_only_admins(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "ADMIN_USER_IDS", {10})
+        now = 1_800_000_000
+        conn.execute(
+            "INSERT INTO query_log (ts, question, window_ids, cited_ids, user_id) "
+            "VALUES (?, 'admin', '[]', '[]', 10)",
+            (now - 60,),
+        )
+        conn.commit()
+        s = db.stats(conn, now=now)
+        assert s["last_user_ask"] is None
 
     def test_stats_summarizes_ask_latency(self, conn):
         now = 1_800_000_000
