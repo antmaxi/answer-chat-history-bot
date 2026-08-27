@@ -1,8 +1,10 @@
-"""Hybrid retrieval: BM25 over messages, cosine over window embeddings, fused with RRF.
+"""Hybrid retrieval: BM25 over messages, cosine over message embeddings, fused with RRF.
 
 Keyword search catches names, dates and exact terms; vector search catches
 paraphrase. Reciprocal Rank Fusion merges the two rankings without needing the
-scores to be on a comparable scale.
+scores to be on a comparable scale. Each ranked message is then expanded into
+a thread (replies, @mentions, embedding neighbours) so parallel topics in the
+same burst do not share one excerpt.
 """
 
 import re
@@ -13,11 +15,11 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from . import config, embed, people
+from . import config, embed, people, thread
 from .timerange import TimeRange, parse_time_range
 
 # None = every chat; a tuple of ids is an allow-list (empty means no chats).
-# values: window ids, vectors, (ts_start, ts_end) per window
+# values: message ids (messages.id), vectors, ts per message
 _vec_cache: dict[tuple[int, ...] | None, tuple[list[int], np.ndarray, np.ndarray]] = {}
 _df_cache: dict[str, int] = {}
 _KEEP_STEM_MIN = 4
@@ -54,6 +56,7 @@ class Hit:
     text: str
     score: float
     cosine: float = 0.0
+    msg_ids: tuple[int, ...] = ()
 
     def when(self) -> str:
         return datetime.fromtimestamp(self.ts_start, timezone.utc).strftime("%Y-%m-%d")
@@ -201,7 +204,7 @@ def keyword_search(
     limit: int,
     time_range: TimeRange | None = None,
 ) -> list[int]:
-    """Best-matching messages, mapped up to the windows that contain them."""
+    """Best-matching message row ids (`messages.id`)."""
     query = fts_query(conn, question)
     if not query:
         return []
@@ -209,55 +212,38 @@ def keyword_search(
     if chats is not None and not chats:
         return []
 
-    # bm25() is only available where the FTS table is queried directly, so the
-    # ranking happens in a CTE and the join to windows happens outside it.
-    # Filter by chat inside the CTE so a busy foreign chat cannot crowd out the
-    # allow-list, and so we never even rank messages the caller must not see.
+    # bm25() is only available where the FTS table is queried directly.
     params: list = [query]
     if chats is None:
-        ranked = """
-            SELECT rowid AS mid, bm25(messages_fts) AS rank
+        sql = """
+            SELECT messages_fts.rowid AS mid
             FROM messages_fts
+            JOIN messages m ON m.id = messages_fts.rowid
             WHERE messages_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
         """
     else:
         placeholders = ",".join("?" * len(chats))
-        ranked = f"""
-            SELECT messages_fts.rowid AS mid, bm25(messages_fts) AS rank
+        sql = f"""
+            SELECT messages_fts.rowid AS mid
             FROM messages_fts
-            JOIN messages scoped ON scoped.id = messages_fts.rowid
+            JOIN messages m ON m.id = messages_fts.rowid
             WHERE messages_fts MATCH ?
-              AND scoped.chat_id IN ({placeholders})
-            ORDER BY rank
-            LIMIT ?
+              AND m.chat_id IN ({placeholders})
         """
         params.extend(chats)
-    # Many messages collapse into few windows, so over-fetch inside the CTE.
-    params.append(limit * 20)
-
-    sql = f"""
-        WITH ranked AS ({ranked})
-        SELECT w.id, min(ranked.rank) AS rank
-        FROM ranked
-        JOIN messages m ON m.id = ranked.mid
-        JOIN windows  w ON w.chat_id = m.chat_id
-                       AND m.msg_id BETWEEN w.first_msg AND w.last_msg
-    """
     if time_range is not None:
-        sql += " WHERE w.ts_end >= ? AND w.ts_start <= ?"
+        sql += " AND m.ts >= ? AND m.ts <= ?"
         params.extend([time_range.start, time_range.end])
-    sql += " GROUP BY w.id ORDER BY rank LIMIT ?"
+    sql += " ORDER BY bm25(messages_fts) LIMIT ?"
     params.append(limit)
 
     return [r[0] for r in conn.execute(sql, params)]
 
 
 def _vectors(conn: sqlite3.Connection, chat_id: ChatId) -> tuple[list[int], np.ndarray, np.ndarray]:
-    """Load and cache the vector matrix. Small enough to keep in memory."""
+    """Load and cache the message-vector matrix. Small enough to keep in memory."""
     chats = normalize_chat_ids(chat_id)
-    empty_times = np.zeros((0, 2), dtype=np.int64)
+    empty_times = np.zeros(0, dtype=np.int64)
     if chats is not None and not chats:
         return [], np.zeros((0, config.EMBED_DIM), dtype=np.float32), empty_times
 
@@ -265,26 +251,25 @@ def _vectors(conn: sqlite3.Connection, chat_id: ChatId) -> tuple[list[int], np.n
     if key in _vec_cache:
         return _vec_cache[key]
 
-    sql = """SELECT v.window_id, v.vec, w.ts_start, w.ts_end
-             FROM window_vecs v JOIN windows w ON w.id = v.window_id"""
+    sql = """SELECT v.message_id, v.vec, m.ts
+             FROM message_vecs v JOIN messages m ON m.id = v.message_id"""
     params: list = []
     if chats is not None:
         placeholders = ",".join("?" * len(chats))
-        sql += f" WHERE w.chat_id IN ({placeholders})"
+        sql += f" WHERE m.chat_id IN ({placeholders})"
         params.extend(chats)
-    sql += " ORDER BY v.window_id"
+    sql += " ORDER BY v.message_id"
 
-    ids, blobs, starts, ends = [], [], [], []
+    ids, blobs, times = [], [], []
     for row in conn.execute(sql, params):
         ids.append(row[0])
         blobs.append(embed.unpack(row[1]))
-        starts.append(row[2])
-        ends.append(row[3])
+        times.append(row[2])
 
     matrix = np.vstack(blobs) if blobs else np.zeros((0, config.EMBED_DIM), dtype=np.float32)
-    times = np.column_stack([starts, ends]) if ids else empty_times
-    _vec_cache[key] = (ids, matrix, times)
-    return ids, matrix, times
+    ts = np.asarray(times, dtype=np.int64) if ids else empty_times
+    _vec_cache[key] = (ids, matrix, ts)
+    return ids, matrix, ts
 
 
 def invalidate_cache() -> None:
@@ -305,7 +290,7 @@ def _vector_scores(
     if not ids:
         return [], np.zeros(0, dtype=np.float32)
     if time_range is not None:
-        mask = (times[:, 1] >= time_range.start) & (times[:, 0] <= time_range.end)
+        mask = (times >= time_range.start) & (times <= time_range.end)
         if not np.any(mask):
             return [], np.zeros(0, dtype=np.float32)
         ids = [i for i, keep in zip(ids, mask) if keep]
@@ -371,6 +356,125 @@ def cap_hits(
     return kept
 
 
+def _window_id_for(conn: sqlite3.Connection, chat_id: int, msg_id: int) -> int:
+    row = conn.execute(
+        """SELECT id FROM windows
+           WHERE chat_id=? AND first_msg<=? AND last_msg>=?
+           ORDER BY id LIMIT 1""",
+        (chat_id, msg_id, msg_id),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _candidate_msgs(
+    conn: sqlite3.Connection,
+    seed: sqlite3.Row,
+    time_range: TimeRange | None = None,
+) -> list[sqlite3.Row]:
+    """Messages near the seed in time, plus reply ancestors and direct replies."""
+    chat_id = seed["chat_id"]
+    radius = config.THREAD_RADIUS_SECONDS
+    start = int(seed["ts"]) - radius
+    end = int(seed["ts"]) + radius
+    if time_range is not None:
+        start = max(start, time_range.start)
+        end = min(end, time_range.end)
+    rows = list(
+        conn.execute(
+            """SELECT * FROM messages WHERE chat_id=? AND ts BETWEEN ? AND ?
+               ORDER BY ts, msg_id""",
+            (chat_id, start, end),
+        )
+    )
+    by_mid = {r["msg_id"]: r for r in rows}
+
+    rid = seed["reply_to"]
+    hops = 0
+    while rid and hops < 20:
+        hops += 1
+        if rid in by_mid:
+            rid = by_mid[rid]["reply_to"]
+            continue
+        extra = conn.execute(
+            "SELECT * FROM messages WHERE chat_id=? AND msg_id=?",
+            (chat_id, rid),
+        ).fetchone()
+        if extra is None:
+            break
+        if time_range is not None and not time_range.overlaps(extra["ts"], extra["ts"]):
+            break
+        by_mid[rid] = extra
+        rid = extra["reply_to"]
+
+    for child in conn.execute(
+        "SELECT * FROM messages WHERE chat_id=? AND reply_to=?",
+        (chat_id, seed["msg_id"]),
+    ):
+        if time_range is not None and not time_range.overlaps(child["ts"], child["ts"]):
+            continue
+        by_mid[child["msg_id"]] = child
+
+    return sorted(by_mid.values(), key=lambda r: (r["ts"], r["msg_id"]))
+
+
+def _seed_cosines(
+    conn: sqlite3.Connection,
+    chat_id: ChatId,
+    seed: sqlite3.Row,
+    candidates: list[sqlite3.Row],
+) -> dict[int, float]:
+    """Cosine of each candidate vs the seed's message vector. Missing = no vector."""
+    ids, matrix, _times = _vectors(conn, chat_id)
+    if not ids:
+        return {}
+    index = {mid: i for i, mid in enumerate(ids)}
+    seed_i = index.get(seed["id"])
+    if seed_i is None:
+        return {}
+    seed_vec = matrix[seed_i]
+    out: dict[int, float] = {}
+    for row in candidates:
+        j = index.get(row["id"])
+        if j is None:
+            continue
+        out[row["msg_id"]] = float(matrix[j] @ seed_vec)
+    return out
+
+
+def _hit_from_thread(
+    conn: sqlite3.Connection,
+    seed: sqlite3.Row,
+    members: list[sqlite3.Row],
+    score: float,
+    cosine: float,
+    names: dict[int, str],
+    aliases: dict[int, int],
+) -> Hit:
+    from .index import render
+
+    speakers = sorted(
+        {
+            people.speaker_label(
+                names, m["sender_id"], m["sender"] or "", aliases=aliases
+            )
+            for m in members
+        }
+    )
+    return Hit(
+        window_id=_window_id_for(conn, seed["chat_id"], seed["msg_id"]),
+        chat_id=seed["chat_id"],
+        first_msg=members[0]["msg_id"],
+        last_msg=members[-1]["msg_id"],
+        ts_start=members[0]["ts"],
+        ts_end=members[-1]["ts"],
+        speakers=", ".join(speakers),
+        text=render(members, names, aliases=aliases),
+        score=score,
+        cosine=cosine,
+        msg_ids=tuple(m["msg_id"] for m in members),
+    )
+
+
 def search(
     conn: sqlite3.Connection,
     question: str,
@@ -401,7 +505,7 @@ def search(
     vec_ids, vec_scores = _vector_scores(
         conn, question, chat_id, time_range, query_vec=query_vec
     )
-    cosine = {wid: float(s) for wid, s in zip(vec_ids, vec_scores)}
+    query_cosine = {mid: float(s) for mid, s in zip(vec_ids, vec_scores)}
     if vec_ids:
         vec_ranking = [vec_ids[i] for i in np.argsort(-vec_scores)[:pool]]
     else:
@@ -417,61 +521,106 @@ def search(
 
     fused: dict[int, float] = {}
     for ranking, weight in rankings:
-        for rank, window_id in enumerate(ranking):
-            fused[window_id] = fused.get(window_id, 0.0) + weight / (config.RRF_K + rank + 1)
-
-    if fused and config.RECENCY_HALF_LIFE_DAYS > 0 and time_range is None:
-        now_ts = int(now.timestamp())
-        placeholders = ",".join("?" * len(fused))
-        ts_end = {
-            r[0]: r[1]
-            for r in conn.execute(
-                f"SELECT id, ts_end FROM windows WHERE id IN ({placeholders})",
-                list(fused),
-            )
-        }
-        for wid, score in fused.items():
-            fused[wid] = score * recency_weight(
-                ts_end.get(wid, now_ts), now_ts, config.RECENCY_HALF_LIFE_DAYS
+        for rank, message_id in enumerate(ranking):
+            fused[message_id] = fused.get(message_id, 0.0) + weight / (
+                config.RRF_K + rank + 1
             )
 
-    best = sorted(fused.items(), key=lambda kv: -kv[1])[:top_k]
-    if not best:
+    ranked = sorted(fused.items(), key=lambda kv: -kv[1])[:pool]
+    if not ranked:
         return []
 
-    placeholders = ",".join("?" * len(best))
-    rows = {
+    placeholders = ",".join("?" * len(ranked))
+    seeds = {
         r["id"]: r
         for r in conn.execute(
-            f"SELECT * FROM windows WHERE id IN ({placeholders})", [wid for wid, _ in best]
+            f"SELECT * FROM messages WHERE id IN ({placeholders})",
+            [mid for mid, _ in ranked],
         )
     }
 
+    names = people.name_map(conn)
+    aliases = people.alias_map(conn)
+    handles = people.mention_map(conn)
+
+    expanded: dict[int, list[sqlite3.Row]] = {}
+    members_by_seed: dict[int, tuple[int, ...]] = {}
+    for message_id, _score in ranked:
+        seed = seeds.get(message_id)
+        if seed is None:
+            continue
+        if allowed is not None and seed["chat_id"] not in allowed:
+            continue
+        if time_range is not None and not time_range.overlaps(seed["ts"], seed["ts"]):
+            continue
+        candidates = _candidate_msgs(conn, seed, time_range)
+        mentioned = {
+            m["msg_id"]: thread.resolve_mentions(m["text"], handles) for m in candidates
+        }
+        neighbours = thread.expand_thread(
+            candidates,
+            seed["msg_id"],
+            mentioned=mentioned,
+            cosine=_seed_cosines(conn, chat_id, seed, candidates),
+        )
+        if not neighbours:
+            neighbours = [seed]
+        expanded[message_id] = neighbours
+        members_by_seed[seed["msg_id"]] = tuple(m["msg_id"] for m in neighbours)
+
+    if speaker:
+        ranked = [
+            (mid, score)
+            for mid, score in ranked
+            if mid in expanded
+            and speaker.lower()
+            in ", ".join(
+                sorted(
+                    {
+                        people.speaker_label(
+                            names, m["sender_id"], m["sender"] or "", aliases=aliases
+                        )
+                        for m in expanded[mid]
+                    }
+                )
+            ).lower()
+        ]
+
+    kept_seeds = thread.dedupe_seeds(
+        [(seeds[mid]["msg_id"], score) for mid, score in ranked if mid in expanded],
+        members_by_seed,
+    )
+    kept_msg_ids = set(kept_seeds)
+
     hits = []
-    for window_id, score in best:
-        r = rows.get(window_id)
-        if r is None:
+    for message_id, score in ranked:
+        if message_id not in expanded:
             continue
-        if allowed is not None and r["chat_id"] not in allowed:
+        seed = seeds[message_id]
+        if seed["msg_id"] not in kept_msg_ids:
             continue
-        if time_range is not None and not time_range.overlaps(r["ts_start"], r["ts_end"]):
-            continue
-        if speaker and speaker.lower() not in (r["speakers"] or "").lower():
-            continue
+        members = expanded[message_id]
         hits.append(
-            Hit(
-                window_id=r["id"],
-                chat_id=r["chat_id"],
-                first_msg=r["first_msg"],
-                last_msg=r["last_msg"],
-                ts_start=r["ts_start"],
-                ts_end=r["ts_end"],
-                speakers=r["speakers"] or "",
-                text=r["text"],
-                score=score,
-                cosine=cosine.get(window_id, 0.0),
+            _hit_from_thread(
+                conn,
+                seed,
+                members,
+                score,
+                query_cosine.get(message_id, 0.0),
+                names,
+                aliases,
             )
         )
+
+    if hits and config.RECENCY_HALF_LIFE_DAYS > 0 and time_range is None:
+        now_ts = int(now.timestamp())
+        for hit in hits:
+            hit.score *= recency_weight(
+                hit.ts_end, now_ts, config.RECENCY_HALF_LIFE_DAYS
+            )
+        hits.sort(key=lambda h: -h.score)
+
+    hits = hits[:top_k]
     if not explicit_k:
         hits = cap_hits(hits)
     return hits

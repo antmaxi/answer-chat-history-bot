@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS window_vecs (
   vec       BLOB NOT NULL
 );
 
+-- Per-message embeddings. Vector search ranks these, then query-time expansion
+-- grows a thread around each hit. Window vectors are leftover from older
+-- indexes and are no longer written.
+CREATE TABLE IF NOT EXISTS message_vecs (
+  message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  vec        BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS state (
   chat_id             INTEGER PRIMARY KEY,
   last_indexed_msg_id INTEGER NOT NULL DEFAULT 0
@@ -408,7 +416,7 @@ def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
     return {
         "messages": count("messages"),
         "windows": count("windows"),
-        "embedded": count("window_vecs"),
+        "embedded": count("message_vecs"),
         "chats": count("(SELECT DISTINCT chat_id FROM messages)"),
         "first_message": _iso_utc(first_ts),
         "last_message": _iso_utc(last_ts),

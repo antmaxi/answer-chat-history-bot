@@ -1,15 +1,17 @@
-"""Group messages into conversation windows and embed them.
+"""Group messages into conversation windows and embed each message.
 
-Windows, not individual messages, are the retrieval unit. Chat messages are
-short and context-free on their own ("yeah, that one"), so embedding them
-individually retrieves noise.
+Windows are still built for incremental rebuilds and stats. Retrieval ranks
+*messages* (keyword + vectors); query-time expansion grows a thread around
+each hit so parallel topics in the same burst do not share one excerpt.
+Each message is embedded as a one-line transcript so short replies still
+carry a speaker label.
 """
 
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import config, db, embed, logconfig, people, retrieve
+from . import config, db, embed, logconfig, people, retrieve, thread
 
 
 def render(
@@ -18,7 +20,7 @@ def render(
     mode: str | None = None,
     aliases: dict[int, int] | None = None,
 ) -> str:
-    """Render a window as a plain transcript, which is what gets embedded.
+    """Render messages as a plain transcript (embedded lines and LLM excerpts).
 
     `names` maps sender id to a public display name. Unresolved people render as
     the stable "User N" in `aliases`, unless SPEAKER_LABEL=export (or mode="export")
@@ -34,24 +36,39 @@ def render(
     return "\n".join(lines)
 
 
-def build_windows(msgs: list[sqlite3.Row]) -> list[list[sqlite3.Row]]:
+def build_windows(
+    msgs: list[sqlite3.Row],
+    mentioned: dict[int, set[int]] | None = None,
+) -> list[list[sqlite3.Row]]:
     """Split a chronological message list into overlapping conversation windows.
 
     A window ends when the next message arrives after a long silence, or when
     the window is already long enough. A reply to something inside the current
-    window keeps it open regardless of the gap — reply chains are one thread of
-    conversation even when they span hours.
+    window, or an @mention of someone who spoke in it, keeps it open regardless
+    of the gap — those are one thread even when they span hours.
     """
     windows: list[list[sqlite3.Row]] = []
     current: list[sqlite3.Row] = []
     chars = 0
+    mentioned = mentioned or {}
 
     for msg in msgs:
         if current:
             gap = msg["ts"] - current[-1]["ts"]
-            replies_into_window = msg["reply_to"] in {m["msg_id"] for m in current}
+            in_window = {m["msg_id"] for m in current}
+            speakers_in_window = {
+                m["sender_id"] for m in current if m["sender_id"] is not None
+            }
+            replies_into_window = msg["reply_to"] in in_window
+            mentions_into_window = bool(
+                mentioned.get(msg["msg_id"], set()) & speakers_in_window
+            )
 
-            too_old = gap > config.WINDOW_GAP_SECONDS and not replies_into_window
+            too_old = (
+                gap > config.WINDOW_GAP_SECONDS
+                and not replies_into_window
+                and not mentions_into_window
+            )
             too_many = len(current) >= config.WINDOW_MAX_MSGS
             too_long = chars >= config.WINDOW_MAX_CHARS
 
@@ -99,7 +116,7 @@ def _rebuild_boundary(conn: sqlite3.Connection, chat_id: int) -> int:
 
 @dataclass
 class EmbedJob:
-    """Windows ready to embed, produced under the DB lock, encoded off it."""
+    """Windows + message texts ready to embed, produced under the DB lock."""
 
     chat_id: int
     n_windows: int
@@ -115,7 +132,7 @@ def plan_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int) -> Embed
     without holding a database lock. `None` if this chat has no messages in range.
     """
     conn.execute("DELETE FROM windows WHERE chat_id=? AND first_msg>=?", (chat_id, from_msg_id))
-    conn.commit()  # vectors for the dropped windows go with them (ON DELETE CASCADE)
+    conn.commit()
 
     msgs = conn.execute(
         "SELECT * FROM messages WHERE chat_id=? AND msg_id>=? ORDER BY ts, msg_id",
@@ -127,8 +144,12 @@ def plan_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int) -> Embed
     names = people.name_map(conn)
     people.ensure_aliases(conn, (m["sender_id"] for m in msgs))
     aliases = people.alias_map(conn)
+    handles = people.mention_map(conn)
+    mentioned = {
+        m["msg_id"]: thread.resolve_mentions(m["text"], handles) for m in msgs
+    }
     rows = []
-    for g in build_windows(msgs):
+    for g in build_windows(msgs, mentioned):
         speakers = sorted(
             {people.speaker_label(names, m["sender_id"], m["sender"] or "", aliases=aliases)
              for m in g}
@@ -142,23 +163,29 @@ def plan_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int) -> Embed
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
+    # Drop stale message vectors in this range so edits and renamed speakers
+    # are re-embedded. Pending is whatever still lacks a vector afterwards.
+    conn.execute(
+        """DELETE FROM message_vecs WHERE message_id IN (
+               SELECT id FROM messages WHERE chat_id=? AND msg_id>=?)""",
+        (chat_id, from_msg_id),
+    )
     conn.commit()
 
-    # Embed exactly the windows that lack a vector. Deriving the work from the
-    # data (rather than the boundary) is self-correcting: a crash between window
-    # insert and embed just leaves them to be picked up on the next run.
     pending = conn.execute(
-        """SELECT w.id, w.text FROM windows w
-           LEFT JOIN window_vecs v ON v.window_id = w.id
-           WHERE w.chat_id=? AND v.window_id IS NULL ORDER BY w.id""",
-        (chat_id,),
+        """SELECT m.id, m.ts, m.sender_id, m.sender, m.text FROM messages m
+           LEFT JOIN message_vecs v ON v.message_id = m.id
+           WHERE m.chat_id=? AND m.msg_id>=? AND v.message_id IS NULL
+           ORDER BY m.ts, m.msg_id""",
+        (chat_id, from_msg_id),
     ).fetchall()
+    pending_texts = [render([r], names, aliases=aliases) for r in pending]
     return EmbedJob(
         chat_id=chat_id,
         n_windows=len(rows),
         watermark=max(m["msg_id"] for m in msgs),
         pending_ids=[r["id"] for r in pending],
-        pending_texts=[r["text"] for r in pending],
+        pending_texts=pending_texts,
     )
 
 
@@ -166,8 +193,8 @@ def apply_job(conn: sqlite3.Connection, job: EmbedJob, vecs) -> int:
     """Write vectors (if any) and advance the watermark."""
     if job.pending_ids and vecs is not None:
         conn.executemany(
-            "INSERT OR REPLACE INTO window_vecs (window_id, vec) VALUES (?, ?)",
-            [(wid, embed.pack(v)) for wid, v in zip(job.pending_ids, vecs)],
+            "INSERT OR REPLACE INTO message_vecs (message_id, vec) VALUES (?, ?)",
+            [(mid, embed.pack(v)) for mid, v in zip(job.pending_ids, vecs)],
         )
     conn.execute(
         """INSERT INTO state (chat_id, last_indexed_msg_id) VALUES (?, ?)
@@ -183,9 +210,10 @@ def _index_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int, progre
     """(Re)window and embed messages with msg_id >= from_msg_id for one chat.
 
     The single indexing primitive. Windows at or after the boundary are dropped
-    and rebuilt — their vectors cascade away — and everything before it is left
-    untouched, so only the changed tail is re-embedded. `from_msg_id=0` rebuilds
-    the whole chat. Embedding, the expensive step, is what this narrows down.
+    and rebuilt, and message vectors in that range are re-encoded. Everything
+    before the boundary is left untouched, so only the changed tail is
+    re-embedded. `from_msg_id=0` rebuilds the whole chat. Embedding, the
+    expensive step, is what this narrows down.
     """
     job = plan_from(conn, chat_id, from_msg_id)
     if job is None:

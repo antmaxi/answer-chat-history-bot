@@ -224,6 +224,35 @@ def name_map(conn: sqlite3.Connection) -> dict[int, str]:
     }
 
 
+def mention_map(conn: sqlite3.Connection) -> dict[str, int]:
+    """Lowercase @handle (or unique first-name token) → sender_id.
+
+    Usernames win. A display-name first token is added only when it is unique
+    in `people` and does not collide with a username, so `@nino` still resolves
+    when the export never stored a Telegram handle.
+    """
+    out: dict[str, int] = {}
+    for r in conn.execute(
+        "SELECT sender_id, username FROM people "
+        "WHERE username IS NOT NULL AND username != ''"
+    ):
+        handle = str(r["username"]).lstrip("@").lower()
+        if handle:
+            out[handle] = int(r["sender_id"])
+    tokens: dict[str, set[int]] = {}
+    for r in conn.execute(
+        "SELECT sender_id, display_name FROM people WHERE display_name != ''"
+    ):
+        first = str(r["display_name"]).split()[0].lower()
+        if len(first) < 3:
+            continue
+        tokens.setdefault(first, set()).add(int(r["sender_id"]))
+    for token, ids in tokens.items():
+        if token not in out and len(ids) == 1:
+            out[token] = next(iter(ids))
+    return out
+
+
 def resolve(names: dict[int, str], sender_id: int | None, fallback: str) -> str:
     """Resolved name for a sender, or `fallback` if we don't have one."""
     if sender_id is not None:

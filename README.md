@@ -239,7 +239,7 @@ and fill in the keys you need. Values are read once at startup from
 Local. A full `index` is required after changing the model or dimension.
 
 - **`EMBED_MODEL`** (`intfloat/multilingual-e5-small`) — sentence-transformers
-  model used to embed windows and queries.
+  model used to embed messages and queries.
 - **`EMBED_DIM`** (`384`) — vector width stored in SQLite. Must match the
   model; wrong values make search silently useless.
 - **`EMBED_THREADS`** (`1`) — CPU threads for the local embedding model.
@@ -251,15 +251,19 @@ Local. A full `index` is required after changing the model or dimension.
 
 ### Windowing
 
-Consecutive messages are grouped into conversation windows (the retrieval
-unit). A new window starts when the time gap is too large, or the current
-window hits a size cap. Reply chains stay together regardless of the gap.
-Change these, then run a full `index`.
+Consecutive messages are still grouped into conversation windows (incremental
+rebuilds and stats). A new window starts when the time gap is too large, or
+the current window hits a size cap. Reply chains and @mentions of someone in
+the current window stay together regardless of the gap. Change these, then
+run a full `index`.
+
+Retrieval ranks **messages**, then grows a thread around each hit (see
+Retrieval below). Window size caps also bound that excerpt.
 
 - **`WINDOW_GAP_SECONDS`** (`1800`) — idle gap that starts a new window
-  (30 minutes).
-- **`WINDOW_MAX_MSGS`** (`25`) — maximum messages in one window.
-- **`WINDOW_MAX_CHARS`** (`1500`) — maximum characters in one window.
+  (30 minutes). Also the default radius for query-time thread expansion.
+- **`WINDOW_MAX_MSGS`** (`25`) — maximum messages in one window / excerpt.
+- **`WINDOW_MAX_CHARS`** (`1500`) — maximum characters in one window / excerpt.
 - **`WINDOW_OVERLAP`** (`2`) — messages copied onto the next window so an
   answer is not cut in half at the boundary.
 - **`UPDATE_LOOKBACK_DAYS`** (`14`) — on `index --update` (and the bot's
@@ -277,17 +281,30 @@ Change these, then run a full `index`.
 
 ### Retrieval
 
-Hybrid keyword (FTS5) + vector search, merged with reciprocal rank fusion.
+Hybrid keyword (FTS5) + vector search over **messages**, merged with
+reciprocal rank fusion. Each ranked message is expanded into a thread using
+replies, @mentions, embedding similarity to the seed, and (when a line has
+no vector) the same speaker nearby. Overlapping expansions are merged.
+A full `index` is required after this change (vectors moved from windows
+to messages).
 
-- **`TOP_K`** (`10`) — windows ranked by fusion before the excerpt cap.
+- **`TOP_K`** (`10`) — threads ranked by fusion before the excerpt cap.
 - **`MIN_K`** (`10`) / **`MAX_K`** (`10`) — excerpts sent to the LLM. Always
   keep at least `MIN_K`; stop early once cosine falls below `COSINE_MIN`;
   never send more than `MAX_K`. Defaults match `TOP_K` so the model sees
-  10 windows. Lower them if you want the cosine trim.
+  10 excerpts. Lower them if you want the cosine trim.
 - **`COSINE_MIN`** (`0.7`) — cosine floor for extra excerpts after `MIN_K`.
   `0` disables the cutoff (always send `MAX_K`).
+- **`THREAD_RADIUS_SECONDS`** (same as `WINDOW_GAP_SECONDS`) — how far from
+  the seed to look for thread members (plus the seed's reply chain).
+- **`THREAD_COSINE_MIN`** (`0.65`) — a neighbour is kept when its embedding
+  is at least this similar to the seed. Drops the other topic in a mixed burst.
+- **`THREAD_SAME_SPEAKER_SECONDS`** (`180`) — without a vector, keep this
+  speaker's nearby lines so a "yeah" still has a little context.
+- **`THREAD_OVERLAP_JACCARD`** (`0.5`) — merge expansions that share at least
+  this fraction of messages.
 - **`RECENCY_HALF_LIFE_DAYS`** (`365`) — fused scores are multiplied by
-  `0.5^(age / half-life)` using each window's `ts_end`, so a year-old
+  `0.5^(age / half-life)` using each message's timestamp, so a year-old
   excerpt scores half as much as an equally relevant one from today.
   `0` disables. Questions that already name a time range skip this.
 - **`RRF_K`** (`20`) — RRF smoothing; lower keeps the top ranks more

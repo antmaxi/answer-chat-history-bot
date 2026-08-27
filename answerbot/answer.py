@@ -264,8 +264,8 @@ def answer(
         _record(conn, question, chat_id, result, t0, llm)
         return result
 
-    # Live messages are in FTS immediately but only join windows after the tail
-    # is re-windowed. Flush first so "what did we just say" sees the open tail.
+    # Live messages are in FTS immediately but only have vectors after the tail
+    # is re-indexed. Flush first so "what did we just say" sees the open tail.
     if flush:
         live.flush_tail(conn, chat_id)
 

@@ -1,8 +1,8 @@
-"""Golden-set retrieval eval: did the right window land in top-k?
+"""Golden-set retrieval eval: did the right excerpt land in top-k?
 
 Cases come from the synthetic export in tests/make_fixture.py — the same
 conversations the README uses as examples. Success is "every needle appears
-in the concatenated top-k window text", which is what the LLM would see.
+in the concatenated top-k thread text", which is what the LLM would see.
 
     python -m answerbot.eval              # against DB_PATH
     python -m answerbot.eval --fixture    # load + index the fixture, then eval

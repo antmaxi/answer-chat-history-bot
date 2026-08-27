@@ -4,10 +4,9 @@ The Bot API only delivers messages sent after the bot joined, and only in
 groups where privacy mode is off (set via BotFather). The one-time export seeds
 everything before that; this keeps it live.
 
-Re-embedding the whole chat on every message would be wasteful, so new messages
-land in `messages` immediately. They only become retrieval units once they sit
-in a window (keyword search joins FTS hits to windows by msg_id range), so the
-tail is re-windowed in batches and flushed again just before answering.
+New messages land in `messages` (and FTS) immediately. Vector search needs
+`message_vecs`, so the tail is re-embedded in batches and flushed again just
+before answering.
 """
 
 from collections.abc import Sequence
@@ -87,9 +86,9 @@ def maybe_reindex(conn: sqlite3.Connection, chat_id: int) -> bool:
 def refresh_if_in_tail(conn: sqlite3.Connection, chat_id: int, msg_id: int) -> bool:
     """Rebuild the open tail if this message sits in (or after) it.
 
-    Live edits update `messages` (and FTS) immediately, but the window
-    transcript fed to the LLM stays stale until those windows are rebuilt.
-    Older edits are left for a lookback or full reindex — same as CLI `--update`.
+    Live edits update `messages` (and FTS) immediately, but message vectors
+    stay stale until the tail is rebuilt. Older edits are left for a lookback
+    or full reindex — same as CLI `--update`.
     """
     boundary = index._rebuild_boundary(conn, chat_id)
     if msg_id < boundary:

@@ -26,33 +26,36 @@ is the same: only if `python -m answerbot.eval` says hybrid RRF is not enough.
 Telegram export (.json) ──┐
                           ├──> ingest ──> SQLite ──> index ──> retrieve ──> answer ──> Telegram
 Bot API live updates ─────┘             (messages)  (windows,  (hybrid +    (Claude / Gemini /
-                                                     vectors,   time/speaker) Groq / OpenRouter /
-                                                     FTS5)                    Cursor / Ollama)
+                                                     msg vecs,  thread      Groq / OpenRouter /
+                                                     FTS5)      expansion)  Cursor / Ollama)
 ```
 
 Modules:
 
 - `ingest/export.py` — parse Telegram Desktop JSON into normalized rows
 - `ingest/live.py` — append / upsert Bot API messages; flush or refresh the tail
-- `index.py` — conversation windows, embed (plan/apply so encode can run off the DB lock)
-- `retrieve.py` — hybrid BM25 + cosine, RRF, optional time-range and speaker filters; `query_vec` so the bot can encode off the SQLite lock
+- `index.py` — conversation windows, per-message embed (plan/apply so encode can run off the DB lock)
+- `retrieve.py` — hybrid BM25 + cosine over messages, query-time thread expansion, optional time/speaker filters; `query_vec` so the bot can encode off the SQLite lock
+- `thread.py` — replies / @mentions / cosine neighbours around a seed message
 - `timerange.py` / `people.py` / `followup.py` — question parsing helpers
 - `answer.py` — provider-agnostic LLM call, grounded prompt + citations
 - `i18n.py` — RU/EN UI strings; Russian default, `/settings` to switch
 - `bot.py` — aiogram: routing, DM allow-list, live ingest, cooldown, lookback
 - `eval.py` — golden-set success@k (`python -m answerbot.eval [--fixture]`)
 
-## Why windows, not messages
+## Why windows, then message threads
 
-Chat messages are short and context-free ("yeah, that one"). Embedding them
-individually retrieves noise. Consecutive messages become **conversation
-windows**:
+Chat messages are short and context-free ("yeah, that one"). Consecutive
+messages are still grouped into **conversation windows** for incremental
+indexing and stats:
 
 - new window when the time gap exceeds ~30 min, or the window passes ~25 messages / ~1500 chars
-- 2-message overlap between adjacent windows so answers aren't cut in half
-- reply chains stay together regardless of the time gap
+- 2-message overlap between adjacent windows
+- reply chains and @mentions of a speaker in the window stay together regardless of the time gap
 
-Windows are the retrieval unit and the citation unit.
+Retrieval ranks **messages** (BM25 + cosine). Each hit is expanded at query
+time into a thread (replies, @mentions, embedding neighbours). That excerpt
+is the citation unit — so two topics in the same burst do not share a bag.
 
 ## Schema
 
@@ -86,7 +89,12 @@ CREATE TABLE windows (
 
 CREATE TABLE window_vecs (
   window_id INTEGER PRIMARY KEY REFERENCES windows(id) ON DELETE CASCADE,
-  vec       BLOB NOT NULL
+  vec       BLOB NOT NULL            -- leftover; no longer written
+);
+
+CREATE TABLE message_vecs (
+  message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  vec        BLOB NOT NULL
 );
 
 CREATE TABLE state (chat_id INTEGER PRIMARY KEY, last_indexed_msg_id INTEGER);
@@ -134,21 +142,22 @@ New tables go in `SCHEMA`. New columns on existing tables go through
 
 Hybrid, merged with Reciprocal Rank Fusion (`score = Σ weight/(RRF_K + rank)`):
 
-1. **BM25** over `messages_fts`, mapped up to owning windows — names, dates, exact terms
-2. **Vector** cosine over `window_vecs` — paraphrase
+1. **BM25** over `messages_fts` — names, dates, exact terms
+2. **Vector** cosine over `message_vecs` — paraphrase
 
-Fusion ranks `TOP_K` windows. Unless the question already has a time range,
+Fusion ranks messages. Unless the question already has a time range,
 fused scores are multiplied by a recency decay (`0.5^(age / RECENCY_HALF_LIFE_DAYS)`
-on `ts_end`) so newer excerpts outrank equally relevant older ones. Then
-`cap_hits` keeps `MIN_K`–`MAX_K` excerpts (defaults match `TOP_K`, so the
-model sees 10): always the first `MIN_K`, then stop when cosine falls below
-`COSINE_MIN`. The bot does not re-window on each question; live ingest batches
-(`LIVE_REINDEX_EVERY`) and the periodic lookback do.
+on the message timestamp) so newer excerpts outrank equally relevant older ones.
+Each ranked message is expanded into a thread (`thread.expand_thread`); near-
+duplicate threads are merged. Then `cap_hits` keeps `MIN_K`–`MAX_K` excerpts
+(defaults match `TOP_K`, so the model sees 10): always the first `MIN_K`, then
+stop when cosine falls below `COSINE_MIN`. The bot does not re-window on each
+question; live ingest batches (`LIVE_REINDEX_EVERY`) and the periodic lookback do.
 
 An empty chat allow-list is *no chats*, never “all chats”. Time phrases
-(“last week”, “yesterday”, “in February”, ISO dates) filter windows by
-`ts_start`/`ts_end`. “What did Anna say” over-fetches then keeps windows whose
-`speakers` contain that name.
+(“last week”, “yesterday”, “in February”, ISO dates) filter messages by `ts`.
+“What did Anna say” over-fetches then keeps threads whose `speakers` contain
+that name.
 
 Short follow-ups (“how much was it”, a reply to the bot) stitch the previous
 question into the *search* string. The answer model still sees the original

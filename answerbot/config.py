@@ -30,6 +30,15 @@ WINDOW_GAP_SECONDS = int(os.getenv("WINDOW_GAP_SECONDS", str(30 * 60)))
 WINDOW_MAX_MSGS = int(os.getenv("WINDOW_MAX_MSGS", "25"))
 WINDOW_MAX_CHARS = int(os.getenv("WINDOW_MAX_CHARS", "1500"))
 WINDOW_OVERLAP = int(os.getenv("WINDOW_OVERLAP", "2"))
+# Query-time thread around a retrieved message. Candidates are messages within
+# RADIUS of the seed (plus its reply chain). A neighbour is kept if it replies
+# into the thread, @mentions a thread speaker (or is mentioned), is close in
+# embedding space to the seed, or — when it has no vector — is the same speaker
+# within SAME_SPEAKER_SECONDS. OVERLAP_JACCARD merges nearly-duplicate threads.
+THREAD_RADIUS_SECONDS = int(os.getenv("THREAD_RADIUS_SECONDS", str(WINDOW_GAP_SECONDS)))
+THREAD_COSINE_MIN = float(os.getenv("THREAD_COSINE_MIN", "0.65"))
+THREAD_SAME_SPEAKER_SECONDS = int(os.getenv("THREAD_SAME_SPEAKER_SECONDS", "180"))
+THREAD_OVERLAP_JACCARD = float(os.getenv("THREAD_OVERLAP_JACCARD", "0.5"))
 
 # How far back a manual `index --update` re-windows, on top of the open tail, so
 # recent edits get picked up. Recent messages are the ones most likely to be

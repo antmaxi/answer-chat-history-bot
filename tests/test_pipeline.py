@@ -28,6 +28,13 @@ from answerbot.index import build_windows, render
 from answerbot.ingest import live
 from answerbot.ingest.export import flatten_text, parse_sender_id, parse_ts
 from answerbot.retrieve import Hit, fts_query, matches_keep_stem, term_df_band
+from answerbot.thread import (
+    dedupe_seeds,
+    expand_thread,
+    jaccard,
+    mentions_in,
+    resolve_mentions,
+)
 
 
 @pytest.fixture
@@ -56,8 +63,22 @@ def fake_embed(monkeypatch):
     return calls
 
 
-def msg(msg_id: int, ts: int, text: str = "hi", reply_to=None, sender="Anna") -> sqlite3.Row:
-    return {"msg_id": msg_id, "ts": ts, "text": text, "reply_to": reply_to, "sender": sender}
+def msg(
+    msg_id: int,
+    ts: int,
+    text: str = "hi",
+    reply_to=None,
+    sender="Anna",
+    sender_id=None,
+) -> sqlite3.Row:
+    return {
+        "msg_id": msg_id,
+        "ts": ts,
+        "text": text,
+        "reply_to": reply_to,
+        "sender": sender,
+        "sender_id": sender_id,
+    }
 
 
 def seed(conn, specs, chat_id=1):
@@ -144,6 +165,28 @@ class TestWindowing:
         windows = build_windows([msg(1, 0), msg(2, gap, reply_to=1)])
         assert len(windows) == 1
 
+    def test_mention_keeps_window_open_across_gap(self):
+        gap = config.WINDOW_GAP_SECONDS * 5
+        windows = build_windows(
+            [
+                msg(1, 0, "hello", sender_id=10),
+                msg(2, gap, "hey @anna, still on this?", sender_id=20),
+            ],
+            mentioned={2: {10}},
+        )
+        assert len(windows) == 1
+
+    def test_mention_of_outsider_does_not_keep_window_open(self):
+        gap = config.WINDOW_GAP_SECONDS * 5
+        windows = build_windows(
+            [
+                msg(1, 0, "hello", sender_id=10),
+                msg(2, gap, "hey @nino", sender_id=20),
+            ],
+            mentioned={2: {99}},
+        )
+        assert len(windows) == 2
+
     def test_size_split_overlaps(self):
         """Splitting mid-conversation carries the tail so answers aren't cut in half."""
         msgs = [msg(i, i * 10) for i in range(config.WINDOW_MAX_MSGS + 3)]
@@ -154,6 +197,81 @@ class TestWindowing:
 
     def test_empty_input(self):
         assert build_windows([]) == []
+
+
+class TestThread:
+    def test_mentions_in_skips_short_handles(self):
+        assert mentions_in("hey @Nino and @giorgi_1 see @x") == ["nino", "giorgi_1"]
+
+    def test_resolve_mentions(self):
+        assert resolve_mentions("hi @nino", {"nino": 20, "anna": 10}) == {20}
+        assert resolve_mentions("none here", {"nino": 20}) == set()
+
+    def test_reply_chain_is_kept(self):
+        msgs = [
+            msg(1, 0, "wifi password?", sender_id=1),
+            msg(2, 5, "HappyMonday", reply_to=1, sender_id=2),
+            msg(3, 6, "ski trip 200 lari", sender_id=1),
+        ]
+        got = expand_thread(
+            msgs, 2, cosine={1: 0.9, 2: 1.0, 3: 0.1}, cosine_min=0.65
+        )
+        ids = [m["msg_id"] for m in got]
+        assert ids == [1, 2]
+
+    def test_mention_pulls_the_named_speaker(self):
+        msgs = [
+            msg(1, 0, "cabin is booked", sender_id=10),
+            msg(2, 8, "unrelated chalet price", sender_id=30),
+            msg(3, 12, "@anna thanks for booking", sender_id=20),
+            msg(4, 13, "booking confirmed thanks", sender_id=20),
+        ]
+        got = expand_thread(
+            msgs,
+            3,
+            mentioned={3: {10}},
+            cosine={1: 0.2, 2: 0.1, 3: 1.0, 4: 0.95},
+            cosine_min=0.65,
+        )
+        ids = [m["msg_id"] for m in got]
+        assert 1 in ids and 3 in ids and 4 in ids
+        assert 2 not in ids
+
+    def test_cosine_drops_the_other_topic(self):
+        msgs = [
+            msg(1, 0, "ski 200 lari", sender_id=10),
+            msg(2, 1, "wifi hunter2", sender_id=20),
+            msg(3, 2, "chalet sleeps 8", sender_id=10),
+            msg(4, 3, "password capital H", sender_id=20),
+        ]
+        cosine = {1: 0.1, 2: 1.0, 3: 0.1, 4: 0.95}
+        got = expand_thread(msgs, 2, cosine=cosine, cosine_min=0.65)
+        assert [m["msg_id"] for m in got] == [2, 4]
+
+    def test_collapsed_vectors_keep_the_neighbourhood(self):
+        msgs = [
+            msg(1, 0, "one", sender_id=10),
+            msg(2, 10, "two", sender_id=10),
+            msg(3, 20, "other", sender_id=20),
+        ]
+        got = expand_thread(msgs, 2, cosine={1: 0.0, 2: 0.0, 3: 0.0})
+        assert {m["msg_id"] for m in got} == {1, 2, 3}
+
+    def test_cap_keeps_the_seed(self):
+        msgs = [msg(i, i, "x" * 100, sender_id=1) for i in range(1, 10)]
+        cosine = {i: 0.9 for i in range(1, 10)}
+        got = expand_thread(
+            msgs, 5, cosine=cosine, max_msgs=3, max_chars=10_000, cosine_min=0.5
+        )
+        ids = [m["msg_id"] for m in got]
+        assert 5 in ids
+        assert len(ids) == 3
+
+    def test_dedupe_drops_overlapping_threads(self):
+        ranked = [(1, 1.0), (2, 0.9), (10, 0.8)]
+        members = {1: (1, 2, 3), 2: (2, 3, 4), 10: (10, 11)}
+        assert dedupe_seeds(ranked, members, overlap=0.5) == [1, 10]
+        assert jaccard((1, 2), (1, 2, 3)) == pytest.approx(2 / 3)
 
 
 class TestFtsQuery:
@@ -488,9 +606,11 @@ class TestIncrementalIndex:
         index.update(conn)
 
         # exactly one embed call, covering only the reopened tail — far fewer
-        # texts than the whole corpus of windows.
+        # texts than the whole corpus of messages.
+        total_msgs = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
         assert len(fake_embed) == 1
-        assert len(fake_embed[0]) < total_windows
+        assert len(fake_embed[0]) < total_msgs
+        assert len(fake_embed[0]) < total_windows * config.WINDOW_MAX_MSGS
 
     def test_update_is_noop_when_nothing_new(self, conn, fake_embed):
         seed(conn, STREAM)
@@ -553,7 +673,7 @@ class TestIncrementalIndex:
 
         assert "EDITED" in self._window_text_for(conn, 20)  # window rebuilt
         assert result["windows"] > 0
-        assert len(fake_embed) == 1  # the refreshed windows were re-embedded
+        assert len(fake_embed) == 1  # the refreshed tail was re-embedded
 
     def test_lookback_leaves_older_history_untouched(self, conn, fake_embed):
         """Lookback rebuilds only recent windows, not the whole corpus."""
@@ -577,6 +697,16 @@ class TestPeopleNames:
         conn.commit()
         names = people.name_map(conn)
         assert people.resolve(names, 42, "Private Label") == "Real Name"
+
+    def test_mention_map_prefers_username_then_unique_first_name(self, conn):
+        people.record(conn, 10, "Anna", "anna_tg", "live")
+        people.record(conn, 20, "Nino", None, "live")
+        people.record(conn, 21, "Nino Other", None, "live")
+        conn.commit()
+        handles = people.mention_map(conn)
+        assert handles["anna_tg"] == 10
+        assert handles["anna"] == 10  # unique first token
+        assert "nino" not in handles  # two Ninos, not unique
 
     def test_keeps_emoji_and_styled_unicode(self, conn):
         family = "👨‍👩‍👧"
@@ -901,6 +1031,57 @@ class TestChatScope:
         assert hits
         assert all("pangolin" in h.text for h in hits)
 
+
+class TestInterleavedSearch:
+    def test_other_topic_is_not_in_the_excerpt(self, conn, monkeypatch):
+        """Parallel topics in one burst: the excerpt follows the matching thread."""
+        dim = config.EMBED_DIM
+
+        def pack_text(text: str) -> np.ndarray:
+            v = np.zeros(dim, np.float32)
+            t = text.lower()
+            if any(w in t for w in ("wifi", "password", "hunter")):
+                v[0] = 1
+            elif any(w in t for w in ("ski", "lari", "chalet")):
+                v[1] = 1
+            else:
+                v[2] = 1
+            n = float(np.linalg.norm(v))
+            if n:
+                v /= n
+            return v
+
+        def fake_passages(texts, batch_size=64, progress=False, **_k):
+            return np.stack([pack_text(t) for t in texts])
+
+        monkeypatch.setattr("answerbot.embed.encode_passages", fake_passages)
+        monkeypatch.setattr("answerbot.embed.encode_query", lambda q: pack_text(q))
+
+        conn.executemany(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, sender_id, text) "
+            "VALUES (1, ?, ?, ?, ?, ?)",
+            [
+                (1, 100, "Anna", 10, "ski trip is 200 lari each"),
+                (2, 101, "Giorgi", 20, "wifi password is hunter2"),
+                (3, 102, "Anna", 10, "chalet sleeps 8"),
+                (4, 103, "Giorgi", 20, "password, capital H"),
+            ],
+        )
+        people.record(conn, 10, "Anna", None, "live")
+        people.record(conn, 20, "Giorgi", None, "live")
+        conn.commit()
+        index.reindex(conn, progress=False)
+
+        hits = retrieve.search(conn, "wifi password", chat_id=1)
+        assert hits
+        assert "hunter2" in hits[0].text.lower()
+        wifi = [h for h in hits if "hunter2" in h.text.lower()]
+        assert wifi
+        assert all("200 lari" not in h.text.lower() for h in wifi)
+        assert all("chalet" not in h.text.lower() for h in wifi)
+
+
+class TestChatScopeMore:
     def test_answer_with_empty_allow_list_does_not_search(self, conn, fake_embed):
         seed(conn, [(1, 1, "secret from other chat")], chat_id=1)
         index.reindex(conn, progress=False)
@@ -951,7 +1132,7 @@ class TestChatScope:
 
 
 class TestAnswerFlushesTail:
-    def test_unwindowed_message_is_invisible_until_flush(self, conn, fake_embed):
+    def test_unwindowed_message_is_searchable_via_keyword(self, conn, fake_embed):
         seed(conn, STREAM)
         index.reindex(conn, progress=False)
         last_ts = STREAM[-1][1]
@@ -960,10 +1141,9 @@ class TestAnswerFlushesTail:
         assert conn.execute(
             "SELECT count(*) FROM windows WHERE chat_id=1 AND last_msg>=200"
         ).fetchone()[0] == 0
-        # The new text is not in any window yet, so it cannot appear in hits.
-        # (Dummy zero vectors still rank existing windows; we care about the text.)
+        # Keyword search is message-level, so the new line is already visible.
         hits = retrieve.search(conn, "pangolin sighting", chat_id=1)
-        assert all("pangolin" not in h.text.lower() for h in hits)
+        assert any("pangolin" in h.text.lower() for h in hits)
 
         result = run_answer(conn, "pangolin sighting", chat_id=1, llm=FakeLLM())
         assert any("pangolin" in h.text.lower() for h in result.hits)
@@ -1059,9 +1239,9 @@ class TestCapHits:
         seed(conn, STREAM)
         index.reindex(conn, progress=False)
         hits = retrieve.search(conn, "m1", chat_id=1, top_k=5)
-        # STREAM yields 3 windows. Cap would stop at MIN_K=1 (cosine is 0);
-        # skipping it returns every fused window, even past MAX_K=2.
-        assert len(hits) == 3
+        # Dummy cosine is 0, so the default cap would stop at MIN_K=1.
+        # An explicit top_k skips it; STREAM is two bursts, so two threads.
+        assert len(hits) == 2
         assert len(retrieve.search(conn, "m1", chat_id=1)) == 1
 
 
