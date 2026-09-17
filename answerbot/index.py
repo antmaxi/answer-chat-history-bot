@@ -353,6 +353,9 @@ def main() -> None:
     else:
         result = reindex(conn, args.chat_id, progress=True)
         verb = "indexed"
+    from . import faq
+
+    faq.update(conn, progress=True)
     print(f"{verb} {result['windows']} windows across {result['chats']} chat(s)")
     print(db.stats(conn))
 

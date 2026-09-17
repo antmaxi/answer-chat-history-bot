@@ -32,6 +32,8 @@ class TestStrings:
             assert "/settings" in text
             assert "/info" in text
             assert "/cancel" in text
+        assert "FAQ" in i18n.t("en", "help")
+        assert "FAQ" in i18n.t("ru", "help")
         assert "/stats" in i18n.t("en", "help_admin")
         assert "/stats <a> <b>" in i18n.t("en", "help_admin")
         assert "/who" in i18n.t("en", "help_admin")
@@ -71,6 +73,8 @@ class TestStrings:
         assert i18n.t("ru", "search_cancelled") == "Поиск отменён."
         assert i18n.t("en", "nothing_to_cancel") == "Nothing to cancel."
         assert i18n.t("ru", "nothing_to_cancel") == "Сейчас нечего отменять."
+        assert i18n.t("en", "go_to_faq") == "Open the FAQ article"
+        assert i18n.t("ru", "go_to_faq") == "Открыть статью FAQ"
 
     def test_admin_startup_dms(self):
         assert i18n.t("en", "bot_starting") == "Bot is starting"

@@ -13,3 +13,6 @@ def _default_speaker_label(monkeypatch):
     monkeypatch.setattr(config, "MAX_K", config.TOP_K)
     monkeypatch.setattr(config, "COSINE_MIN", 0.0)
     monkeypatch.setattr(config, "RECENCY_HALF_LIFE_DAYS", 0.0)
+    # FAQ fetch is network; tests that need it turn it on and stub ingest.
+    monkeypatch.setattr(config, "FAQ_ENABLED", False)
+    monkeypatch.setattr(config, "FAQ_COSINE_MIN", 0.0)

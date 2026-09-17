@@ -15,18 +15,22 @@ from . import config, db, logconfig, retrieve
 from .ingest import live
 from .llm import LLM, get_llm
 
-SYSTEM = """You answer questions about chat history, using ONLY the excerpts provided.
+SYSTEM = """You answer questions using ONLY the excerpts provided. Excerpts may come from a community FAQ wiki or from chat history.
 
 Rules:
 - Base every claim strictly on the excerpts. Never use outside knowledge or guess.
-- If the excerpts don't contain the answer, say exactly: "I couldn't find that in the chat history." Do not speculate.
+- If the excerpts don't contain the answer, say exactly: "I couldn't find that in the chat history or the FAQ." Do not speculate.
+- Prefer FAQ excerpts for procedures, rules, and how-to. Prefer chat excerpts for recent prices, what people said, and personal reports.
+- When FAQ and chat disagree, say so and cite both.
 - Cite the excerpts you used with their [W#] tags, e.g. "You each owe 200 lari [W2]." Do not add URLs; the client turns [W#] into links.
 - Format the answer in Markdown: **bold** for names, products, and constraints; *italic* for light emphasis; `code` for exact values or identifiers; hyphen bullets (`- `) when a list is clearer than a paragraph. Do not wrap the whole answer in a fenced code block. Do not use headings or images.
 - Quote sparingly; prefer to summarize. Keep the answer to a few sentences.
-- When excerpts disagree, prefer the more recent ones unless the question is about an earlier period.
-- Excerpts may come from more than one chat. The header names the source chat when several are in play. Do not mix facts across chats unless the question asks for a combined picture.
+- When chat excerpts disagree, prefer the more recent ones unless the question is about an earlier period. FAQ excerpts have no date; do not treat them as old chat.
+- Excerpts may come from more than one chat or from the FAQ. The header names the source when several are in play. Do not mix facts across chats unless the question asks for a combined picture.
 - Answer in the same language as the question."""
 
+NOT_FOUND = "I couldn't find that in the chat history."
+NOT_FOUND_FAQ = "I couldn't find that in the chat history or the FAQ."
 CITATION = re.compile(r"\[W(\d+)\]")
 # [W3], [W3](url), or [W3] (url) — models sometimes emit a markdown/parenthetical link.
 CITATION_MARKUP = re.compile(r"\[W(\d+)\](?:\s*\(\s*https?://[^)]+\s*\))?")
@@ -168,6 +172,17 @@ def format_answer_body(result: Answer) -> str:
     return linkify_citations(markdown_to_html(result.text), result.hits)
 
 
+def not_found_text() -> str:
+    return NOT_FOUND_FAQ if config.FAQ_ENABLED else NOT_FOUND
+
+
+def jump_i18n_key(hit: retrieve.Hit | None) -> str | None:
+    """i18n key for the primary-source jump link, or None if there isn't one."""
+    if hit is None:
+        return None
+    return "go_to_faq" if hit.kind == "faq" else "go_to_first"
+
+
 def format_sources_html(
     result: Answer,
     *,
@@ -183,7 +198,7 @@ def format_sources_html(
             link = f"<b>{link}</b>"
         tick = CITED_TICK if was_cited else ""
         chat = ""
-        if include_chat:
+        if include_chat and h.kind != "faq":
             chat = f"{html_lib.escape(chat_label(h, chat_titles), quote=False)} · "
         when = html_lib.escape(h.when(), quote=False)
         speakers = html_lib.escape(h.speakers, quote=False)
@@ -201,10 +216,13 @@ def chat_label(hit: retrieve.Hit, chat_titles: dict[int, str] | None = None) -> 
 def build_context(
     hits: list[retrieve.Hit], chat_titles: dict[int, str] | None = None
 ) -> str:
-    multi = len({h.chat_id for h in hits}) > 1
+    chats = {h.chat_id for h in hits if h.kind != "faq"}
+    multi = len(chats) > 1
     blocks = []
     for i, hit in enumerate(hits, 1):
-        if multi:
+        if hit.kind == "faq":
+            header = f"[W{i}] FAQ, {hit.speakers}:"
+        elif multi:
             header = f"[W{i}] {chat_label(hit, chat_titles)}, {hit.when()}, {hit.speakers}:"
         else:
             header = f"[W{i}] {hit.when()}, {hit.speakers}:"
@@ -221,7 +239,7 @@ def complete_answer(
 ) -> Answer:
     """LLM call only — no DB. The bot runs this off the SQLite lock."""
     if not hits:
-        return Answer("I couldn't find that in the chat history.", [])
+        return Answer(not_found_text(), [])
     llm = llm or get_llm()
     user = f"Excerpts:\n\n{build_context(hits, chat_titles)}\n\n---\nQuestion: {question}"
     text = llm.complete(SYSTEM, user)
@@ -241,8 +259,8 @@ def _record(
         conn,
         question=question,
         chat_ids=retrieve.normalize_chat_ids(chat_id),
-        window_ids=[h.window_id for h in result.hits],
-        cited_ids=[h.window_id for h in result.cited_hits()],
+        window_ids=[h.log_id() for h in result.hits],
+        cited_ids=[h.log_id() for h in result.cited_hits()],
         latency_ms=int((time.monotonic() - t0) * 1000),
         model=getattr(llm, "model", None) or config.ANSWER_MODEL,
         user_id=user_id,
@@ -260,7 +278,7 @@ def answer(
     t0 = time.monotonic()
     chats = retrieve.normalize_chat_ids(chat_id)
     if chats is not None and not chats:
-        result = Answer("I couldn't find that in the chat history.", [])
+        result = Answer(not_found_text(), [])
         _record(conn, question, chat_id, result, t0, llm)
         return result
 

@@ -491,6 +491,7 @@ class TestAnswerCitations:
 class TestAnswerMarkdown:
     def test_prompt_mentions_multiple_chats(self):
         assert "more than one chat" in SYSTEM
+        assert "FAQ" in SYSTEM
 
     def test_prompt_asks_for_markdown(self):
         assert "Markdown" in SYSTEM

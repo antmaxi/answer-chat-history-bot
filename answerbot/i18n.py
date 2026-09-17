@@ -41,7 +41,7 @@ T: dict[str, dict[str, str]] = {
     "en": {
         "not_member": "You're not a member of the group this bot serves.",
         "help": (
-            "I answer questions from the chat history I index.\n"
+            "I answer questions from the chat history I index and from the community FAQ.\n"
             "In the main group, @mention me (or reply to a question with @mention), "
             "reply to my messages, or /ask. In DM, just ask.\n"
             "Commands: /ask, /ask <question>, /cancel, /settings, /info"
@@ -51,7 +51,7 @@ T: dict[str, dict[str, str]] = {
             "/reindex (recent), /reindex full, "
             "/resolve (names; retry/stop), /who <id>"
         ),
-        "ask_empty": "Ask me a question about this chat's history.",
+        "ask_empty": "Ask me a question about this chat's history or the FAQ.",
         "ask_prompt": "What is your question on the chat {name}?",
         "ask_prompt_all": "What is your question on {name} and the other indexed chats?",
         "search_cancelled": "Search cancelled.",
@@ -63,6 +63,7 @@ T: dict[str, dict[str, str]] = {
         "wait_minutes": "{n} min",
         "answer_failed": "Something went wrong answering that.",
         "go_to_first": "Go to the first message",
+        "go_to_faq": "Open the FAQ article",
         "sources": "Sources",
         "admins_only": "Admins only.",
         "reindex_full": "Full reindex…",
@@ -160,8 +161,9 @@ T: dict[str, dict[str, str]] = {
             "🤖 <b>{bot_name}</b>\n\n"
             "📅 <b>Last update:</b> {last_commit}\n"
             "🧠 <b>Model:</b> {model} ({provider}){retention}\n"
-            "🔗 <b>Source code:</b> {github_repo}\n\n"
-            "❓ <b>How to ask</b>\n"
+            "🔗 <b>Source code:</b> {github_repo}\n"
+            "{faq}"
+            "\n❓ <b>How to ask</b>\n"
             "<b>In the group</b>\n"
             "• @mention me with a question\n"
             "• reply to someone with a bare @mention (their text is the question)\n"
@@ -175,6 +177,9 @@ T: dict[str, dict[str, str]] = {
             "💬 Feel free to contact @antmaxi for suggestions on what to improve "
             "or if you run into issues with the bot."
         ),
+        "info_faq": (
+            "📚 <b>FAQ:</b> answers also use <a href=\"{faq_site}\">{faq_site}</a>\n"
+        ),
         "info_retention_cursor": (
             "\n🔒 The model provider has a zero-retention policy: your question "
             "and the chat excerpts used to answer it are not stored after the "
@@ -185,7 +190,7 @@ T: dict[str, dict[str, str]] = {
     "ru": {
         "not_member": "Вы не состоите в группе, которую обслуживает этот бот.",
         "help": (
-            "Я отвечаю на вопросы по проиндексированной истории чатов.\n"
+            "Я отвечаю на вопросы по проиндексированной истории чатов и по FAQ сообщества.\n"
             "В основной группе упомяните меня (или ответьте на вопрос с упоминанием), "
             "ответьте на моё сообщение или /ask. В личке просто спросите.\n"
             "Команды: /ask, /ask <вопрос>, /cancel, /settings, /info"
@@ -195,7 +200,7 @@ T: dict[str, dict[str, str]] = {
             "/reindex (недавнее), /reindex full, "
             "/resolve (имена; retry/stop), /who <id>"
         ),
-        "ask_empty": "Задайте вопрос об истории этого чата.",
+        "ask_empty": "Задайте вопрос об истории этого чата или по FAQ.",
         "ask_prompt": "Какой у вас вопрос по чату {name}?",
         "ask_prompt_all": "Какой у вас вопрос по чату {name} и другим проиндексированным чатам?",
         "search_cancelled": "Поиск отменён.",
@@ -207,6 +212,7 @@ T: dict[str, dict[str, str]] = {
         "wait_minutes": "{n} мин",
         "answer_failed": "Не получилось ответить на этот вопрос.",
         "go_to_first": "К первому сообщению",
+        "go_to_faq": "Открыть статью FAQ",
         "sources": "Источники",
         "admins_only": "Только для админов.",
         "reindex_full": "Полная переиндексация…",
@@ -304,8 +310,9 @@ T: dict[str, dict[str, str]] = {
             "🤖 <b>{bot_name}</b>\n\n"
             "📅 <b>Последнее обновление:</b> {last_commit}\n"
             "🧠 <b>Модель:</b> {model} ({provider}){retention}\n"
-            "🔗 <b>Исходный код:</b> {github_repo}\n\n"
-            "❓ <b>Как спросить</b>\n"
+            "🔗 <b>Исходный код:</b> {github_repo}\n"
+            "{faq}"
+            "\n❓ <b>Как спросить</b>\n"
             "<b>В группе</b>\n"
             "• упомяните меня с вопросом\n"
             "• ответьте на чужое сообщение голым упоминанием (этот текст станет вопросом)\n"
@@ -318,6 +325,9 @@ T: dict[str, dict[str, str]] = {
             "• уточнения вроде «а сколько это стоило?» продолжают предыдущий вопрос\n\n"
             "💬 Пишите @antmaxi с предложениями по улучшению бота или если что-то "
             "не работает."
+        ),
+        "info_faq": (
+            "📚 <b>FAQ:</b> ответы также используют <a href=\"{faq_site}\">{faq_site}</a>\n"
         ),
         "info_retention_cursor": (
             "\n🔒 Провайдер модели соблюдает политику нулевого хранения данных: "

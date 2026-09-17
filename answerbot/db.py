@@ -129,6 +129,51 @@ CREATE TABLE IF NOT EXISTS user_prefs (
   user_id INTEGER PRIMARY KEY,
   lang    TEXT NOT NULL
 );
+
+-- Community FAQ wiki (ru-ch/faq). Separate from messages so citations are
+-- GitHub Pages URLs, not t.me links, and thread expansion does not apply.
+CREATE TABLE IF NOT EXISTS faq_pages (
+  path       TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  url        TEXT NOT NULL,
+  sha        TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS faq_chunks (
+  id      INTEGER PRIMARY KEY,
+  path    TEXT NOT NULL REFERENCES faq_pages(path) ON DELETE CASCADE,
+  heading TEXT NOT NULL,
+  text    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_faq_chunks_path ON faq_chunks (path);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS faq_fts USING fts5(
+  text, content='faq_chunks', content_rowid='id', tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS faq_chunks_ai AFTER INSERT ON faq_chunks BEGIN
+  INSERT INTO faq_fts (rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS faq_chunks_ad AFTER DELETE ON faq_chunks BEGIN
+  INSERT INTO faq_fts (faq_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS faq_chunks_au AFTER UPDATE ON faq_chunks BEGIN
+  INSERT INTO faq_fts (faq_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO faq_fts (rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TABLE IF NOT EXISTS faq_vecs (
+  chunk_id INTEGER PRIMARY KEY REFERENCES faq_chunks(id) ON DELETE CASCADE,
+  vec      BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS faq_state (
+  repo       TEXT PRIMARY KEY,
+  sha        TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 """
 
 

@@ -44,7 +44,7 @@ from aiogram.types import (
     Message,
 )
 
-from . import adminlog, answer, chat_scope, config, cooldown, db, embed, followup, i18n, index, logconfig, membership, people, retrieve
+from . import adminlog, answer, chat_scope, config, cooldown, db, embed, faq, followup, i18n, index, logconfig, membership, people, retrieve
 from .info import (
     format_info,
     format_latency,
@@ -146,6 +146,7 @@ async def index_chats(
     force: bool = False,
     full: bool = False,
     progress: dict | None = None,
+    refresh_faq: bool = False,
 ) -> dict:
     """Rebuild windows (and encode) without holding the DB lock during embed."""
     async with _index_lock:
@@ -153,7 +154,16 @@ async def index_chats(
             jobs = await _db(index.plan_reindex, conn, chat_id)
         else:
             jobs = await _db(index.plan_update, conn, chat_id, lookback, force)
-        return await _apply_jobs(jobs, progress)
+        result = await _apply_jobs(jobs, progress)
+        if refresh_faq and config.FAQ_ENABLED:
+            try:
+                sha = await asyncio.to_thread(faq.remote_sha)
+                if not await _db(faq.is_current, conn, sha):
+                    fetched = await asyncio.to_thread(faq.fetch_repo)
+                    await _db(faq.update, conn, fetched=fetched)
+            except Exception:
+                log.exception("faq refresh failed")
+        return result
 
 
 async def _background_index(chat_id: int, *, force: bool = False) -> None:
@@ -171,7 +181,11 @@ async def _periodic_lookback() -> None:
         await asyncio.sleep(hours * 3600)
         log.info("periodic lookback: last %s days", config.UPDATE_LOOKBACK_DAYS)
         try:
-            await index_chats(_source_chat_ids(), lookback=config.UPDATE_LOOKBACK_DAYS)
+            await index_chats(
+                _source_chat_ids(),
+                lookback=config.UPDATE_LOOKBACK_DAYS,
+                refresh_faq=True,
+            )
         except Exception:
             log.exception("periodic lookback failed")
 
@@ -444,10 +458,10 @@ def format_answer(
     # Markdown → Telegram HTML, then [W#] → t.me links (brackets survive escaping).
     body = answer.format_answer_body(result)
 
-    # A direct jump to the first message the answer is grounded in.
-    link = result.primary_link()
-    if link:
-        body += f'\n\n➡️ <a href="{link}">{i18n.t(lang, "go_to_first")}</a>'
+    hit = result.primary_source()
+    key = answer.jump_i18n_key(hit)
+    if key and hit is not None:
+        body += f'\n\n➡️ <a href="{hit.link()}">{i18n.t(lang, key)}</a>'
 
     sources = answer.format_sources_html(
         result, chat_titles=chat_titles, include_chat=include_chat
@@ -878,10 +892,13 @@ async def cmd_reindex(message: Message, command, bot: Bot) -> None:
     done = i18n.t(lang, "reindex_failed")
     try:
         if full:
-            result = await index_chats(chat_ids, full=True, progress=state)
+            result = await index_chats(chat_ids, full=True, progress=state, refresh_faq=True)
         else:
             result = await index_chats(
-                chat_ids, lookback=config.UPDATE_LOOKBACK_DAYS, progress=state
+                chat_ids,
+                lookback=config.UPDATE_LOOKBACK_DAYS,
+                progress=state,
+                refresh_faq=True,
             )
         done = i18n.t(
             lang,

@@ -132,6 +132,13 @@ class TestFormatInfo:
         assert "просто напишите вопрос" in text
         assert "How to ask" not in text
 
+    def test_includes_faq_when_enabled(self, monkeypatch):
+        monkeypatch.setattr(config, "FAQ_ENABLED", True)
+        monkeypatch.setattr(config, "FAQ_SITE", "https://ru-ch.github.io/faq")
+        text = format_info("2026-04-04 14:00:00 UTC+02:00", "en")
+        assert "ru-ch.github.io/faq" in text
+        assert "FAQ" in text
+
     def test_appends_index_stats(self, monkeypatch):
         monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
         s = {

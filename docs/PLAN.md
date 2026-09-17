@@ -1,6 +1,7 @@
 # answer-chat-history-bot — system plan
 
-A Telegram bot that answers questions from a chat's own message history.
+A Telegram bot that answers questions from a chat's own message history
+and from the community FAQ wiki ([ru-ch.github.io/faq](https://ru-ch.github.io/faq/)).
 The v1 pipeline (ingest → index → retrieve → answer → bot + live ingest) is
 shipped. This document is the current design, not a build queue.
 
@@ -27,7 +28,9 @@ Telegram export (.json) ──┐
                           ├──> ingest ──> SQLite ──> index ──> retrieve ──> answer ──> Telegram
 Bot API live updates ─────┘             (messages)  (windows,  (hybrid +    (Claude / Gemini /
                                                      msg vecs,  thread      Groq / OpenRouter /
-                                                     FTS5)      expansion)  Cursor / Ollama)
+                                                     FTS5)      expansion   Cursor / Ollama)
+                                                                        + FAQ chunks)
+ru-ch/faq markdown ──────> faq ingest ─> faq_chunks / faq_fts / faq_vecs ─┘
 ```
 
 Modules:
@@ -35,7 +38,8 @@ Modules:
 - `ingest/export.py` — parse Telegram Desktop JSON into normalized rows
 - `ingest/live.py` — append / upsert Bot API messages; flush or refresh the tail
 - `index.py` — conversation windows, per-message embed (plan/apply so encode can run off the DB lock)
-- `retrieve.py` — hybrid BM25 + cosine over messages, query-time thread expansion, optional time/speaker filters; `query_vec` so the bot can encode off the SQLite lock
+- `faq.py` — fetch `ru-ch/faq` markdown, chunk by heading, FTS + embed; hybrid search prepended to chat hits
+- `retrieve.py` — hybrid BM25 + cosine over messages, query-time thread expansion, optional time/speaker filters; `query_vec` so the bot can encode off the SQLite lock; prepends FAQ hits unless the question has a time range or speaker
 - `thread.py` — replies / @mentions / cosine neighbours around a seed message
 - `timerange.py` / `people.py` / `followup.py` — question parsing helpers
 - `answer.py` — provider-agnostic LLM call, grounded prompt + citations
@@ -128,10 +132,40 @@ CREATE TABLE query_log (
   ts          INTEGER NOT NULL,
   question    TEXT NOT NULL,
   chat_ids    TEXT,
-  window_ids  TEXT NOT NULL,
+  window_ids  TEXT NOT NULL,         -- FAQ chunk ids stored negative
   cited_ids   TEXT NOT NULL,
   latency_ms  INTEGER,
   model       TEXT
+);
+
+CREATE TABLE faq_pages (             -- ru-ch/faq markdown articles
+  path       TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  url        TEXT NOT NULL,
+  sha        TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE faq_chunks (
+  id      INTEGER PRIMARY KEY,
+  path    TEXT NOT NULL,
+  heading TEXT NOT NULL,
+  text    TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE faq_fts USING fts5(
+  text, content='faq_chunks', content_rowid='id', tokenize='unicode61'
+);
+
+CREATE TABLE faq_vecs (
+  chunk_id INTEGER PRIMARY KEY,
+  vec      BLOB NOT NULL
+);
+
+CREATE TABLE faq_state (
+  repo       TEXT PRIMARY KEY,
+  sha        TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 ```
 
@@ -153,6 +187,11 @@ duplicate threads are merged. Then `cap_hits` keeps `MIN_K`–`MAX_K` excerpts
 (defaults match `TOP_K`, so the model sees 10): always the first `MIN_K`, then
 stop when cosine falls below `COSINE_MIN`. The bot does not re-window on each
 question; live ingest batches (`LIVE_REINDEX_EVERY`) and the periodic lookback do.
+
+FAQ chunks are searched the same way (BM25 + cosine, no thread expansion, no
+recency). Up to `FAQ_TOP_K` hits above `FAQ_COSINE_MIN` are prepended to the
+chat list. Time-range and speaker questions skip the FAQ. `/reindex` and the
+periodic lookback refresh the wiki when the GitHub SHA moved.
 
 An empty chat allow-list is *no chats*, never “all chats”. Time phrases
 (“last week”, “yesterday”, “in February”, ISO dates) filter messages by `ts`.
@@ -177,11 +216,13 @@ response. Gemini reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`); Groq
 user strings into one agent prompt and disables tools so the run can only
 return text.
 
-Prompt rule: answers come **only** from the supplied excerpts. “I couldn't find
-this in the history” is a valid answer. The model writes **Markdown** (`**bold**`,
-lists, `` `code` ``); the bot renders that subset as Telegram HTML. Context
-blocks carry `[W3] 2026-03-14, Anna & Nino:` headers; the bot turns `[W3]` into
-`t.me/c/<chat>/<msg_id>` links.
+Prompt rule: answers come **only** from the supplied excerpts (FAQ wiki and/or
+chat). “I couldn't find that in the chat history or the FAQ.” is a valid answer.
+Prefer FAQ for procedures; prefer chat for recency and personal reports. The
+model writes **Markdown** (`**bold**`, lists, `` `code` ``); the bot renders that
+subset as Telegram HTML. Context blocks carry `[W3] 2026-03-14, Anna & Nino:`
+or `[W1] FAQ, Быт · Zürich:` headers; the bot turns `[W#]` into `t.me` or
+GitHub Pages links.
 
 ## Bot behaviour
 
@@ -201,7 +242,7 @@ blocks carry `[W3] 2026-03-14, Anna & Nino:` headers; the bot turns `[W3]` into
   admins also `/stats` (index, question counts, ask-time median ± std
   and min/max over the last day / week / month; `/stats a b` lists terms
   in a–b% of messages), `/reindex` (lookback)
-  and `/reindex full`, `/resolve` (Bot API names, background, resumable;
+  and `/reindex full` (also refreshes the FAQ wiki), `/resolve` (Bot API names, background, resumable;
   `/resolve retry` / `/resolve stop`). Non-admins see only
   `/ask`, `/cancel`, `/settings`, `/info`, `/help` in the command menu.
 - Several members can ask at once: each ask is its own task. Query encode

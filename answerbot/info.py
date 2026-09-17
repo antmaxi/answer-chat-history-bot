@@ -261,6 +261,9 @@ def format_info(updated: str, lang: str | None = None, stats: dict | None = None
         updated = i18n.t(lang, "unknown")
     provider = config.LLM_PROVIDER.lower()
     retention = i18n.t(lang, "info_retention_cursor") if provider == "cursor" else ""
+    faq = ""
+    if config.FAQ_ENABLED:
+        faq = i18n.t(lang, "info_faq", faq_site=html.escape(config.FAQ_SITE))
     text = i18n.t(
         lang,
         "info_msg",
@@ -270,6 +273,7 @@ def format_info(updated: str, lang: str | None = None, stats: dict | None = None
         model=html.escape(config.ANSWER_MODEL),
         provider=html.escape(provider_label()),
         retention=retention,
+        faq=faq,
     )
     if stats is not None:
         text += "\n\n" + format_stats(stats, lang)

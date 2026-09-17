@@ -49,6 +49,7 @@ Export the chat from Telegram Desktop (chat menu → Export chat history → for
 ```bash
 python -m answerbot.ingest.export path/to/result.json   # load messages
 python -m answerbot.index                               # build windows + embeddings
+python -m answerbot.faq                                 # fetch/index the community FAQ wiki
 python -m answerbot.search "how much was the ski trip"  # inspect retrieval
 python -m answerbot.answer "how much was the ski trip"  # grounded answer + sources
 ```
@@ -320,6 +321,25 @@ to messages).
 - **`STOPWORD_KEEP`** (`цюрих,швейцария`) — stems that are never dropped,
   including inflected forms (`цюрихе`, `швейцарии`). Set to empty / `off`
   to clear. Place names can sit in the same DF band as particles.
+
+### Community FAQ
+
+The bot also searches the public wiki at
+[ru-ch.github.io/faq](https://ru-ch.github.io/faq/) (markdown from
+[github.com/ru-ch/faq](https://github.com/ru-ch/faq)). Articles are chunked
+by heading, stored in the same SQLite file, and retrieved with the same
+hybrid keyword + embedding mix. Matching sections are sent to the model
+*before* chat excerpts; citations open the GitHub Pages article. Questions
+that already name a time range or a speaker skip the FAQ (those are
+chat-history questions). Refresh happens on `/reindex`,
+`python -m answerbot.index` / `--update`, the periodic lookback, or
+`python -m answerbot.faq`. Fetch failures leave the last index in place.
+
+- **`FAQ_ENABLED`** (`1`) — `0` / `off` disables FAQ search.
+- **`FAQ_REPO`** (`ru-ch/faq`) — GitHub repo to fetch. Empty / `off` disables.
+- **`FAQ_SITE`** (`https://ru-ch.github.io/faq`) — base URL used in citations.
+- **`FAQ_TOP_K`** (`3`) — FAQ excerpts merged into the prompt (ahead of chat).
+- **`FAQ_COSINE_MIN`** (`0.65`) — drop weaker FAQ chunks; `0` disables.
 
 ### Answering
 

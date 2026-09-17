@@ -57,15 +57,27 @@ class Hit:
     score: float
     cosine: float = 0.0
     msg_ids: tuple[int, ...] = ()
+    kind: str = "chat"
+    url: str | None = None
 
     def when(self) -> str:
+        if self.kind == "faq":
+            return "FAQ"
         return datetime.fromtimestamp(self.ts_start, timezone.utc).strftime("%Y-%m-%d")
 
     def link(self) -> str:
-        """Deep link to the first message of the window."""
+        """Deep link to the first message, or the FAQ article URL."""
+        if self.url:
+            return self.url
         raw = str(self.chat_id)
         raw = raw[4:] if raw.startswith("-100") else raw.lstrip("-")
         return f"https://t.me/c/{raw}/{self.first_msg}"
+
+    def log_id(self) -> int:
+        """query_log window_ids: FAQ chunk ids are stored negative."""
+        if self.kind == "faq":
+            return -int(self.window_id)
+        return int(self.window_id)
 
 
 def _doc_frequency(conn: sqlite3.Connection, token: str) -> int:
@@ -276,6 +288,9 @@ def invalidate_cache() -> None:
     """Call after reindexing inside a long-running process."""
     _vec_cache.clear()
     _df_cache.clear()
+    from . import faq
+
+    faq.invalidate()
 
 
 def _vector_scores(
@@ -325,6 +340,21 @@ def recency_weight(ts_end: int, now_ts: int, half_life_days: float) -> float:
         return 1.0
     age_days = max(0.0, (now_ts - ts_end) / 86400.0)
     return 0.5 ** (age_days / half_life_days)
+
+
+def _with_faq(
+    conn: sqlite3.Connection,
+    question: str,
+    hits: list[Hit],
+    query_vec: np.ndarray | None,
+    time_range: TimeRange | None,
+    speaker: str | None,
+) -> list[Hit]:
+    if time_range is not None or speaker:
+        return hits
+    from . import faq
+
+    return faq.prepend(conn, question, hits, query_vec=query_vec)
 
 
 def cap_hits(
@@ -528,7 +558,7 @@ def search(
 
     ranked = sorted(fused.items(), key=lambda kv: -kv[1])[:pool]
     if not ranked:
-        return []
+        return _with_faq(conn, question, [], query_vec, time_range, speaker)
 
     placeholders = ",".join("?" * len(ranked))
     seeds = {
@@ -623,4 +653,4 @@ def search(
     hits = hits[:top_k]
     if not explicit_k:
         hits = cap_hits(hits)
-    return hits
+    return _with_faq(conn, question, hits, query_vec, time_range, speaker)

@@ -210,6 +210,40 @@ SEARCH_CHAT_SCOPE = parse_search_chat_scope(os.getenv("SEARCH_CHAT_SCOPE"))
 # members = secondary chats the asker currently belongs to; all = every
 # configured source after the main-chat membership gate.
 SEARCH_CHAT_ACCESS = parse_search_chat_access(os.getenv("SEARCH_CHAT_ACCESS"))
+
+
+def _flag(raw: str | None, default: bool) -> bool:
+    """Truthy env flag. Unset uses `default`; empty / 0 / false / off / none is False."""
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in ("", "0", "false", "no", "off", "none")
+
+
+def parse_faq_repo(raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        return "ru-ch/faq"
+    value = str(raw).strip()
+    if value.lower() in ("0", "false", "no", "off", "none"):
+        return ""
+    return value
+
+
+def parse_faq_site(raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        return "https://ru-ch.github.io/faq"
+    return str(raw).strip().rstrip("/")
+
+
+# Community FAQ wiki (https://ru-ch.github.io/faq/). Empty FAQ_REPO / FAQ_ENABLED=off
+# disables it; the tables still exist so an older DB keeps opening.
+FAQ_ENABLED = _flag(os.getenv("FAQ_ENABLED"), True) and bool(
+    parse_faq_repo(os.getenv("FAQ_REPO"))
+)
+FAQ_REPO = parse_faq_repo(os.getenv("FAQ_REPO"))
+FAQ_SITE = parse_faq_site(os.getenv("FAQ_SITE"))
+FAQ_TOP_K = int(os.getenv("FAQ_TOP_K", "3"))
+FAQ_COSINE_MIN = float(os.getenv("FAQ_COSINE_MIN", "0.65"))
+
 ADMIN_USER_IDS = {
     int(x) for x in os.getenv("ADMIN_USER_IDS", "").replace(",", " ").split() if x.strip()
 }
