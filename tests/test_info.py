@@ -110,6 +110,14 @@ class TestFormatInfo:
         assert "claude-sonnet-5" in text
         assert "Claude" in text
         assert "zero-retention" not in text
+        assert "How to ask" in text
+        assert "@mention me with a question" in text
+        assert "bare @mention" in text
+        assert "reply to my answers" in text
+        assert "/ask with a question" in text
+        assert "just type a question" in text
+        assert "how much was it?" in text
+        assert "Как спросить" not in text
 
     def test_default_is_russian(self, monkeypatch):
         monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
@@ -117,6 +125,12 @@ class TestFormatInfo:
         assert "Последнее обновление" in text
         assert "Бот истории чата" in text
         assert "@antmaxi" in text
+        assert "Как спросить" in text
+        assert "упомяните меня с вопросом" in text
+        assert "голым упоминанием" in text
+        assert "ответьте на мой ответ" in text
+        assert "просто напишите вопрос" in text
+        assert "How to ask" not in text
 
     def test_appends_index_stats(self, monkeypatch):
         monkeypatch.setattr(config, "GITHUB_REPO", "https://test.repo")
