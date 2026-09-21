@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS query_log (
   window_ids  TEXT NOT NULL,
   cited_ids   TEXT NOT NULL,
   latency_ms  INTEGER,
+  search_ms   INTEGER,
+  llm_ms      INTEGER,
   model       TEXT,
   user_id     INTEGER
 );
@@ -326,6 +328,8 @@ def migrate(conn: sqlite3.Connection) -> None:
     ensure_column, so a DB created on an older commit still opens.
     """
     ensure_column(conn, "query_log", "user_id", "INTEGER")
+    ensure_column(conn, "query_log", "search_ms", "INTEGER")
+    ensure_column(conn, "query_log", "llm_ms", "INTEGER")
 
 
 def _iso_utc(ts: int | None) -> str | None:
@@ -404,11 +408,12 @@ def _question_windows(conn: sqlite3.Connection, now_ts: int) -> dict[str, int]:
 
 
 def _latency_summary(values: list[int]) -> dict | None:
-    """Median ± sample std, min/max for request latencies in milliseconds."""
+    """Mean, median ± sample std, min/max for durations in milliseconds."""
     if not values:
         return None
     return {
         "n": len(values),
+        "mean_ms": float(statistics.mean(values)),
         "median_ms": float(statistics.median(values)),
         "std_ms": float(statistics.stdev(values)) if len(values) >= 2 else 0.0,
         "min_ms": float(min(values)),
@@ -416,29 +421,48 @@ def _latency_summary(values: list[int]) -> dict | None:
     }
 
 
+def _push_ms(
+    ts: int,
+    ms: int | None,
+    cuts: tuple[int, int, int],
+    buckets: tuple[list[int], list[int], list[int]],
+) -> None:
+    if ms is None:
+        return
+    ms = int(ms)
+    day, week, month = buckets
+    if ts >= cuts[0]:
+        day.append(ms)
+    if ts >= cuts[1]:
+        week.append(ms)
+    month.append(ms)
+
+
 def _latency_windows(conn: sqlite3.Connection, now_ts: int) -> dict:
-    """Ask-request latency summaries for the same rolling windows as questions."""
+    """Ask / search / LLM duration summaries for the same rolling windows as questions."""
     cuts = (now_ts - 86400, now_ts - 7 * 86400, now_ts - 30 * 86400)
+    ask = ([], [], [])
+    search = ([], [], [])
+    llm = ([], [], [])
     rows = conn.execute(
-        """SELECT ts, latency_ms FROM query_log
-           WHERE ts >= ? AND latency_ms IS NOT NULL""",
+        """SELECT ts, latency_ms, search_ms, llm_ms FROM query_log WHERE ts >= ?""",
         (cuts[2],),
     )
-    day: list[int] = []
-    week: list[int] = []
-    month: list[int] = []
-    for ts, ms in rows:
-        ms = int(ms)
-        if ts >= cuts[0]:
-            day.append(ms)
-        if ts >= cuts[1]:
-            week.append(ms)
-        month.append(ms)
-    return {
-        "latency_day": _latency_summary(day),
-        "latency_week": _latency_summary(week),
-        "latency_month": _latency_summary(month),
-    }
+    for ts, latency_ms, search_ms, llm_ms in rows:
+        _push_ms(ts, latency_ms, cuts, ask)
+        _push_ms(ts, search_ms, cuts, search)
+        _push_ms(ts, llm_ms, cuts, llm)
+    out = {}
+    for prefix, buckets in (
+        ("latency", ask),
+        ("search_latency", search),
+        ("llm_latency", llm),
+    ):
+        day, week, month = buckets
+        out[f"{prefix}_day"] = _latency_summary(day)
+        out[f"{prefix}_week"] = _latency_summary(week)
+        out[f"{prefix}_month"] = _latency_summary(month)
+    return out
 
 
 def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
@@ -449,7 +473,8 @@ def stats(conn: sqlite3.Connection, now: int | None = None) -> dict:
     Admin vs others uses the current ADMIN_USER_IDS; rows with no user_id
     (CLI / logs from before that column) count as others.
     Ask-time summaries (median ± sample std, min/max) use `latency_ms` from
-    the same windows; missing when a window has no timed rows.
+    the same windows; database search and LLM request use mean ± sample std
+    from `search_ms` / `llm_ms`. Missing when a window has no timed rows.
     last_user_ask is the latest non-admin query_log timestamp (same rules as
     the others split); None when QUERY_LOG has never recorded one.
     """
@@ -481,14 +506,17 @@ def log_query(
     latency_ms: int,
     model: str | None,
     user_id: int | None = None,
+    search_ms: int | None = None,
+    llm_ms: int | None = None,
 ) -> None:
     """Append one answered question. No-op when QUERY_LOG is off."""
     if not config.QUERY_LOG:
         return
     conn.execute(
         """INSERT INTO query_log
-           (ts, question, chat_ids, window_ids, cited_ids, latency_ms, model, user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (ts, question, chat_ids, window_ids, cited_ids, latency_ms,
+            search_ms, llm_ms, model, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             int(time.time()),
             question,
@@ -496,6 +524,8 @@ def log_query(
             json.dumps(window_ids),
             json.dumps(cited_ids),
             latency_ms,
+            search_ms,
+            llm_ms,
             model,
             user_id,
         ),

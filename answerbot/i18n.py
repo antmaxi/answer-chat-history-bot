@@ -131,7 +131,20 @@ T: dict[str, dict[str, str]] = {
             "last week: {week}\n"
             "last month: {month}"
         ),
+        "stats_search_latency": (
+            "\n\ndatabase search:\n"
+            "last day: {day}\n"
+            "last week: {week}\n"
+            "last month: {month}"
+        ),
+        "stats_llm_latency": (
+            "\n\nLLM request:\n"
+            "last day: {day}\n"
+            "last week: {week}\n"
+            "last month: {month}"
+        ),
         "stats_latency_range": "{median} ± {std} (min {min} / max {max})",
+        "stats_latency_mean": "{mean} ± {std}",
         "stats_latency_none": "n/a",
         "stats_last_user": "\nlast used by others: {when}",
         "stats_last_user_now": "in use now",
@@ -280,7 +293,20 @@ T: dict[str, dict[str, str]] = {
             "за неделю: {week}\n"
             "за месяц: {month}"
         ),
+        "stats_search_latency": (
+            "\n\nпоиск в базе:\n"
+            "за сутки: {day}\n"
+            "за неделю: {week}\n"
+            "за месяц: {month}"
+        ),
+        "stats_llm_latency": (
+            "\n\nзапрос к LLM:\n"
+            "за сутки: {day}\n"
+            "за неделю: {week}\n"
+            "за месяц: {month}"
+        ),
         "stats_latency_range": "{median} ± {std} (мин {min} / макс {max})",
+        "stats_latency_mean": "{mean} ± {std}",
         "stats_latency_none": "нет данных",
         "stats_last_user": "\nпоследний запрос остальных: {when}",
         "stats_last_user_now": "сейчас используется",

@@ -347,6 +347,12 @@ class TestSchemaMigrate:
         assert empty["latency_day"] is None
         assert empty["latency_week"] is None
         assert empty["latency_month"] is None
+        assert empty["search_latency_day"] is None
+        assert empty["search_latency_week"] is None
+        assert empty["search_latency_month"] is None
+        assert empty["llm_latency_day"] is None
+        assert empty["llm_latency_week"] is None
+        assert empty["llm_latency_month"] is None
         assert empty["last_user_ask"] is None
         conn.execute(
             "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, 1, 1700000000, 'A', 'old')"
@@ -499,6 +505,48 @@ class TestSchemaMigrate:
         assert month["median_ms"] == 2500
         assert month["min_ms"] == 1000
         assert month["max_ms"] == 4000
+        assert s["search_latency_day"] is None
+        assert s["llm_latency_day"] is None
+
+    def test_stats_summarizes_search_and_llm_latency(self, conn):
+        now = 1_800_000_000
+        rows = [
+            (now - 3600, 100, 1000),
+            (now - 3600, 200, 2000),
+            (now - 2 * 86400, 300, 3000),
+            (now - 10 * 86400, 400, 4000),
+            (now - 40 * 86400, 999, 99999),
+            (now - 100, None, None),
+        ]
+        conn.executemany(
+            "INSERT INTO query_log "
+            "(ts, question, window_ids, cited_ids, search_ms, llm_ms) "
+            "VALUES (?, 'q', '[]', '[]', ?, ?)",
+            rows,
+        )
+        conn.commit()
+        s = db.stats(conn, now=now)
+        day = s["search_latency_day"]
+        assert day["n"] == 2
+        assert day["mean_ms"] == 150
+        assert abs(day["std_ms"] - 70.71067811865476) < 1e-6
+        week = s["search_latency_week"]
+        assert week["n"] == 3
+        assert week["mean_ms"] == 200
+        assert week["std_ms"] == 100
+        month = s["search_latency_month"]
+        assert month["n"] == 4
+        assert month["mean_ms"] == 250
+        llm_day = s["llm_latency_day"]
+        assert llm_day["n"] == 2
+        assert llm_day["mean_ms"] == 1500
+        assert abs(llm_day["std_ms"] - 707.1067811865476) < 1e-6
+        llm_week = s["llm_latency_week"]
+        assert llm_week["n"] == 3
+        assert llm_week["mean_ms"] == 2000
+        llm_month = s["llm_latency_month"]
+        assert llm_month["n"] == 4
+        assert llm_month["mean_ms"] == 2500
 
 
 class TestChatIdAlign:

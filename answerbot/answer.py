@@ -254,6 +254,8 @@ def _record(
     t0: float,
     llm: LLM | None,
     user_id: int | None = None,
+    search_ms: int | None = None,
+    llm_ms: int | None = None,
 ) -> None:
     db.log_query(
         conn,
@@ -264,6 +266,8 @@ def _record(
         latency_ms=int((time.monotonic() - t0) * 1000),
         model=getattr(llm, "model", None) or config.ANSWER_MODEL,
         user_id=user_id,
+        search_ms=search_ms,
+        llm_ms=llm_ms,
     )
 
 
@@ -287,9 +291,16 @@ def answer(
     if flush:
         live.flush_tail(conn, chat_id)
 
+    search_t0 = time.monotonic()
     hits = retrieve.search(conn, question, chat_id)
+    search_ms = int((time.monotonic() - search_t0) * 1000)
+    llm_t0 = time.monotonic()
     result = complete_answer(question, hits, llm)
-    _record(conn, question, chat_id, result, t0, llm)
+    llm_ms = int((time.monotonic() - llm_t0) * 1000) if hits else None
+    _record(
+        conn, question, chat_id, result, t0, llm,
+        search_ms=search_ms, llm_ms=llm_ms,
+    )
     return result
 
 

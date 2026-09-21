@@ -81,16 +81,45 @@ def _latency_phrase(summary: dict | None, lang: str) -> str:
     )
 
 
+def _mean_std_phrase(summary: dict | None, lang: str) -> str:
+    if not summary:
+        return i18n.t(lang, "stats_latency_none")
+    return i18n.t(
+        lang,
+        "stats_latency_mean",
+        mean=fmt_duration_ms(summary["mean_ms"]),
+        std=fmt_duration_ms(summary["std_ms"]),
+    )
+
+
+def _format_windows(s: dict, lang: str, key: str, prefix: str, phrase) -> str:
+    return i18n.t(
+        lang,
+        key,
+        day=phrase(s.get(f"{prefix}_day"), lang),
+        week=phrase(s.get(f"{prefix}_week"), lang),
+        month=phrase(s.get(f"{prefix}_month"), lang),
+    )
+
+
 def format_latency(s: dict, lang: str | None = None) -> str:
     """Ask-time lines (median ± std, min/max) for day / week / month."""
     lang = i18n.normalize_lang(lang)
-    return i18n.t(
-        lang,
-        "stats_latency",
-        day=_latency_phrase(s.get("latency_day"), lang),
-        week=_latency_phrase(s.get("latency_week"), lang),
-        month=_latency_phrase(s.get("latency_month"), lang),
+    return _format_windows(s, lang, "stats_latency", "latency", _latency_phrase)
+
+
+def format_search_latency(s: dict, lang: str | None = None) -> str:
+    """Database search mean ± std for day / week / month."""
+    lang = i18n.normalize_lang(lang)
+    return _format_windows(
+        s, lang, "stats_search_latency", "search_latency", _mean_std_phrase
     )
+
+
+def format_llm_latency(s: dict, lang: str | None = None) -> str:
+    """LLM request mean ± std for day / week / month."""
+    lang = i18n.normalize_lang(lang)
+    return _format_windows(s, lang, "stats_llm_latency", "llm_latency", _mean_std_phrase)
 
 
 _PCT = re.compile(r"^(\d+(?:\.\d+)?)\s*%?$")
@@ -227,6 +256,8 @@ def format_stats(s: dict, lang: str | None = None, *, questions: bool = False) -
         )
         text += i18n.t(lang, "stats_last_user", when=_last_user_when(s, lang))
         text += format_latency(s, lang)
+        text += format_search_latency(s, lang)
+        text += format_llm_latency(s, lang)
     return text
 
 

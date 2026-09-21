@@ -12,6 +12,8 @@ from answerbot.info import (
     fmt_pct,
     format_info,
     format_latency,
+    format_llm_latency,
+    format_search_latency,
     format_stats,
     format_term_df,
     last_update,
@@ -189,6 +191,16 @@ class TestFormatInfo:
                 "min_ms": 1000.0,
                 "max_ms": 2000.0,
             },
+            "search_latency_day": {
+                "n": 2,
+                "mean_ms": 400.0,
+                "std_ms": 200.0,
+            },
+            "llm_latency_day": {
+                "n": 2,
+                "mean_ms": 2100.0,
+                "std_ms": 500.0,
+            },
         }
         text = format_stats(s, "en", questions=True)
         assert "questions:" in text
@@ -198,6 +210,10 @@ class TestFormatInfo:
         assert "last used by others: never" in text
         assert "ask time:" in text
         assert "last day: 1.5s ± 0.7s (min 1.0s / max 2.0s)" in text
+        assert "database search:" in text
+        assert "LLM request:" in text
+        assert "last day: 0.4s ± 0.2s" in text
+        assert "last day: 2.1s ± 0.5s" in text
         ru = format_stats(s, "ru", questions=True)
         assert "вопросов:" in ru
         assert "за сутки: 2 (админы: 1, остальные: 1)" in ru
@@ -205,6 +221,8 @@ class TestFormatInfo:
         assert "за месяц: 9 (админы: 2, остальные: 7)" in ru
         assert "последний запрос остальных: никогда" in ru
         assert "время запроса:" in ru
+        assert "поиск в базе:" in ru
+        assert "запрос к LLM:" in ru
         assert "нет данных" in ru
 
     def test_format_stats_last_user_ask_timestamp(self):
@@ -328,6 +346,33 @@ class TestFormatLatency:
         )
         assert "last day: 1.2s ± 0.0s (min 1.2s / max 1.2s)" in text
         assert "last week: n/a" in text
+
+    def test_search_and_llm_use_mean_std(self):
+        s = {
+            "search_latency_day": {
+                "n": 2,
+                "mean_ms": 400.0,
+                "std_ms": 200.0,
+            },
+            "llm_latency_day": {
+                "n": 2,
+                "mean_ms": 2100.0,
+                "std_ms": 500.0,
+            },
+        }
+        search = format_search_latency(s, "en")
+        assert "database search:" in search
+        assert "last day: 0.4s ± 0.2s" in search
+        assert "last week: n/a" in search
+        assert "(min" not in search
+        llm = format_llm_latency(s, "en")
+        assert "LLM request:" in llm
+        assert "last day: 2.1s ± 0.5s" in llm
+        ru = format_search_latency({}, "ru")
+        assert "поиск в базе:" in ru
+        assert ru.count("нет данных") == 3
+        ru_llm = format_llm_latency({}, "ru")
+        assert "запрос к LLM:" in ru_llm
 
 
 class TestParseStatsDfArgs:

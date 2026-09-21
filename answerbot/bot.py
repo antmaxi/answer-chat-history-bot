@@ -678,9 +678,11 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         # Encode off the SQLite lock so another asker's ingest/search is not
         # stuck behind SentenceTransformer.
         query_vec = await _embed(embed.encode_query, search_q)
+        search_t0 = time.monotonic()
         hits = await _db(
             retrieve.search, conn, search_q, chat_id, query_vec=query_vec
         )
+        search_ms = int((time.monotonic() - search_t0) * 1000)
         if hits:
             blocked = _quota_block(user_id, lang)
             if blocked:
@@ -695,8 +697,21 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         def complete():
             return answer.complete_answer(question, hits, chat_titles=titles)
 
+        llm_t0 = time.monotonic()
         result = await asyncio.to_thread(complete)
-        await _db(answer._record, conn, question, chat_id, result, t0, None, user_id or None)
+        llm_ms = int((time.monotonic() - llm_t0) * 1000) if hits else None
+        await _db(
+            answer._record,
+            conn,
+            question,
+            chat_id,
+            result,
+            t0,
+            None,
+            user_id or None,
+            search_ms=search_ms,
+            llm_ms=llm_ms,
+        )
         _note_ask_latency(time.monotonic() - t0)
         _history[key].append(question)
         await _stop_thinking(stop, spinner)

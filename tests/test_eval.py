@@ -156,7 +156,26 @@ class TestQueryLog:
         seed(conn, [(1, 1, "pangolin sighting")])
         index.reindex(conn, progress=False)
         run_answer(conn, "pangolin", chat_id=1, llm=FakeLLM())
-        row = conn.execute("SELECT question, window_ids, model FROM query_log").fetchone()
+        row = conn.execute(
+            "SELECT question, window_ids, model, search_ms, llm_ms FROM query_log"
+        ).fetchone()
         assert row["question"] == "pangolin"
         assert row["model"] == "fake"
         assert row["window_ids"].startswith("[")
+        assert row["search_ms"] is not None
+        assert row["search_ms"] >= 0
+        assert row["llm_ms"] is not None
+        assert row["llm_ms"] >= 0
+
+    def test_answer_omits_llm_ms_when_nothing_retrieved(self, conn, fake_embed):
+        from answerbot.answer import answer as run_answer
+
+        class FakeLLM:
+            model = "fake"
+            def complete(self, system, user):
+                raise AssertionError("LLM should not run without hits")
+
+        run_answer(conn, "anything", chat_id=1, llm=FakeLLM())
+        row = conn.execute("SELECT search_ms, llm_ms FROM query_log").fetchone()
+        assert row["search_ms"] is not None
+        assert row["llm_ms"] is None
