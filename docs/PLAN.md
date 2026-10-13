@@ -79,6 +79,7 @@ CREATE TABLE messages (
 CREATE VIRTUAL TABLE messages_fts USING fts5(
   text, content='messages', content_rowid='id', tokenize='unicode61'
 );
+-- Triggers index stem_text(text), not the raw body. Do not FTS5-rebuild.
 
 CREATE TABLE windows (
   id        INTEGER PRIMARY KEY,
@@ -176,8 +177,13 @@ New tables go in `SCHEMA`. New columns on existing tables go through
 
 Hybrid, merged with Reciprocal Rank Fusion (`score = Σ weight/(RRF_K + rank)`):
 
-1. **BM25** over `messages_fts` — names, dates, exact terms
-2. **Vector** cosine over `message_vecs` — paraphrase
+1. **BM25** over `messages_fts` — names, dates, exact terms. The index and the
+   query are Snowball-stemmed (Russian and English); digit tokens are not.
+   `STOPWORD_KEEP` collapses to the configured stem. `/stats` lists stems.
+2. **Vector** cosine over `message_vecs` — paraphrase. Each vector is a short
+   passage (reply parent, up to `EMBED_CONTEXT_MSGS` earlier lines from the
+   same sender within `THREAD_SAME_SPEAKER_SECONDS`, and for a short non-reply
+   the previous message), still keyed to that message.
 
 Fusion ranks messages. Unless the question already has a time range,
 fused scores are multiplied by a recency decay (`0.5^(age / RECENCY_HALF_LIFE_DAYS)`
@@ -218,6 +224,10 @@ return text.
 
 Prompt rule: answers come **only** from the supplied excerpts (FAQ wiki and/or
 chat). “I couldn't find that in the chat history or the FAQ.” is a valid answer.
+That refusal is shown with no source list. Numbers, times, code spans, and
+letter+digit tokens that appear in the answer but in none of the excerpts are
+replaced with the not-found line. A paraphrase with none of those tokens is
+kept, citation or not.
 Prefer FAQ for procedures; prefer chat for recency and personal reports. The
 model writes **Markdown** (`**bold**`, lists, `` `code` ``); the bot renders that
 subset as Telegram HTML. Context blocks carry `[W3] 2026-03-14, Anna & Nino:`
@@ -294,3 +304,6 @@ rotating `answerbot.log` next to the DB. `Dockerfile` /
 - Retrieved windows go to the LLM as-is (wifi passwords and similar will be repeated if asked).
 - `SPEAKER_LABEL=id` anonymizes speaker labels only; names people typed in message text stay.
 - No rerank pass. Add one only if eval recall drops.
+- Message vectors from before the passage recipe stay one line until a full
+  `index` or `/reindex full`. The bot logs a warning while that marker is missing.
+  Keyword stemming does not need a re-embed; opening the database rebuilds FTS once.

@@ -96,6 +96,13 @@ COSINE_MIN = float(os.getenv("COSINE_MIN", "0.7"))
 RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "365"))
 # Intra-op threads for the local embedding model. 1 keeps a small VPS usable.
 EMBED_THREADS = int(os.getenv("EMBED_THREADS", "1"))
+# Passage embedded for each message (the vector stays keyed to that message).
+# Same-speaker lookback is capped at this many earlier lines, within
+# THREAD_SAME_SPEAKER_SECONDS. A line shorter than EMBED_SHORT_CHARS with no
+# reply also takes the single previous message. Changing these needs a full
+# reindex; tail updates do not rewrite the rest of the corpus.
+EMBED_CONTEXT_MSGS = int(os.getenv("EMBED_CONTEXT_MSGS", "2"))
+EMBED_SHORT_CHARS = int(os.getenv("EMBED_SHORT_CHARS", "40"))
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "claude")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")

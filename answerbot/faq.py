@@ -391,22 +391,10 @@ def _doc_frequency(conn: sqlite3.Connection, token: str) -> int:
 
 
 def _fts_query(conn: sqlite3.Connection, question: str) -> str:
-    from . import retrieve
+    from .retrieve import build_fts_query
 
-    tokens = re.findall(r"\w+", question, flags=re.UNICODE)
-    tokens = [t.lower() for t in tokens if len(t) > 1]
-    if not tokens:
-        return ""
     total = conn.execute("SELECT count(*) FROM faq_chunks").fetchone()[0]
-    if total:
-        cutoff = total * config.STOPWORD_DF_RATIO
-        informative = [
-            t
-            for t in tokens
-            if retrieve.is_kept_term(t) or _doc_frequency(conn, t) <= cutoff
-        ]
-        tokens = informative or tokens
-    return " OR ".join(f'"{t}"' for t in tokens)
+    return build_fts_query(question, total, lambda token: _doc_frequency(conn, token))
 
 
 def _keyword_ids(conn: sqlite3.Connection, question: str, limit: int) -> list[int]:

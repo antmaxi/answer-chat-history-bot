@@ -3,15 +3,25 @@
 Windows are still built for incremental rebuilds and stats. Retrieval ranks
 *messages* (keyword + vectors); query-time expansion grows a thread around
 each hit so parallel topics in the same burst do not share one excerpt.
-Each message is embedded as a one-line transcript so short replies still
-carry a speaker label.
+
+Each vector is a short passage, not the bare line: the reply parent, a few
+earlier lines from the same sender, and — for a short line that is not a
+reply — the previous message. Chronological neighbours from other people are
+left out so two topics in the same minute do not share a vector.
 """
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from . import config, db, embed, logconfig, people, retrieve, thread
+
+log = logging.getLogger("answerbot")
+
+# Bump when the passage recipe changes. Full reindex sets it; a mismatch with
+# existing message_vecs means the corpus is still one-line (or an older recipe).
+EMBED_PASSAGE_VERSION = "context-v1"
 
 
 def render(
@@ -86,6 +96,138 @@ def build_windows(
     if current:
         windows.append(current)
     return windows
+
+
+def _before(msg: sqlite3.Row, ts: int, msg_id: int) -> bool:
+    return (int(msg["ts"]), int(msg["msg_id"])) < (ts, msg_id)
+
+
+def passage_rows(
+    target: sqlite3.Row,
+    chrono: list[sqlite3.Row],
+    by_msg_id: dict[int, sqlite3.Row],
+) -> list[sqlite3.Row]:
+    """Context lines for `target`, oldest first, with `target` last.
+
+    `chrono` is the neighbourhood already limited to THREAD_SAME_SPEAKER_SECONDS
+    of the pending batch (plus nothing after `target` is required — callers
+    may pass the whole batch). Reply parents outside that neighbourhood are
+    looked up in `by_msg_id`.
+    """
+    ts = int(target["ts"])
+    msg_id = int(target["msg_id"])
+    gap = config.THREAD_SAME_SPEAKER_SECONDS
+    sender = target["sender_id"]
+    earlier = [m for m in chrono if _before(m, ts, msg_id)]
+
+    chosen: dict[int, sqlite3.Row] = {}
+    parent_id = target["reply_to"]
+    if parent_id:
+        parent = by_msg_id.get(int(parent_id))
+        if parent is not None and int(parent["msg_id"]) != msg_id:
+            chosen[int(parent["msg_id"])] = parent
+
+    n_ctx = config.EMBED_CONTEXT_MSGS
+    if sender is not None and n_ctx > 0:
+        same = [
+            m
+            for m in earlier
+            if m["sender_id"] == sender and ts - int(m["ts"]) <= gap
+        ]
+        for m in same[-n_ctx:]:
+            chosen[int(m["msg_id"])] = m
+
+    text = target["text"] or ""
+    if not parent_id and len(text) < config.EMBED_SHORT_CHARS and earlier:
+        prev = earlier[-1]
+        if ts - int(prev["ts"]) <= gap:
+            chosen[int(prev["msg_id"])] = prev
+
+    ordered = sorted(chosen.values(), key=lambda m: (int(m["ts"]), int(m["msg_id"])))
+    return ordered + [target]
+
+
+def render_passage(
+    rows: list[sqlite3.Row],
+    names: dict[int, str] | None = None,
+    aliases: dict[int, int] | None = None,
+) -> str:
+    """Render a passage, dropping oldest context until it fits WINDOW_MAX_CHARS."""
+    if not rows:
+        return ""
+    max_chars = max(1, config.WINDOW_MAX_CHARS)
+    target = rows[-1]
+    context = list(rows[:-1])
+    while context:
+        text = render(context + [target], names, aliases=aliases)
+        if len(text) <= max_chars:
+            return text
+        context.pop(0)
+    text = render([target], names, aliases=aliases)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
+def passage_texts(
+    conn: sqlite3.Connection,
+    chat_id: int,
+    pending: list[sqlite3.Row],
+    names: dict[int, str],
+    aliases: dict[int, int],
+) -> list[str]:
+    """One passage per pending message. Context may sit before the reindex range."""
+    if not pending:
+        return []
+    min_ts = min(int(r["ts"]) for r in pending)
+    start = min_ts - config.THREAD_SAME_SPEAKER_SECONDS
+    chrono = list(
+        conn.execute(
+            """SELECT * FROM messages WHERE chat_id=? AND ts>=?
+               ORDER BY ts, msg_id""",
+            (chat_id, start),
+        )
+    )
+    by_id = {int(r["msg_id"]): r for r in chrono}
+    missing = sorted(
+        {
+            int(r["reply_to"])
+            for r in pending
+            if r["reply_to"] and int(r["reply_to"]) not in by_id
+        }
+    )
+    if missing:
+        placeholders = ",".join("?" * len(missing))
+        extra = conn.execute(
+            f"SELECT * FROM messages WHERE chat_id=? AND msg_id IN ({placeholders})",
+            [chat_id, *missing],
+        )
+        for row in extra:
+            by_id[int(row["msg_id"])] = row
+    return [
+        render_passage(passage_rows(row, chrono, by_id), names, aliases)
+        for row in pending
+    ]
+
+
+def embeddings_are_stale(conn: sqlite3.Connection) -> bool:
+    """True when stored vectors exist but were not built with this passage recipe."""
+    n = conn.execute("SELECT count(*) FROM message_vecs").fetchone()[0]
+    if not n:
+        return False
+    return db.meta_get(conn, "embed_passage") != EMBED_PASSAGE_VERSION
+
+
+def warn_stale_embeddings(conn: sqlite3.Connection) -> None:
+    if embeddings_are_stale(conn):
+        log.warning(
+            "message embeddings predate contextual passages; "
+            "run a full index: python -m answerbot.index or /reindex full"
+        )
+
+
+def mark_embed_passage(conn: sqlite3.Connection) -> None:
+    db.meta_set(conn, "embed_passage", EMBED_PASSAGE_VERSION)
 
 
 def _chat_ids(conn: sqlite3.Connection, chat_id: retrieve.ChatId = None) -> list[int]:
@@ -173,13 +315,13 @@ def plan_from(conn: sqlite3.Connection, chat_id: int, from_msg_id: int) -> Embed
     conn.commit()
 
     pending = conn.execute(
-        """SELECT m.id, m.ts, m.sender_id, m.sender, m.text FROM messages m
+        """SELECT m.* FROM messages m
            LEFT JOIN message_vecs v ON v.message_id = m.id
            WHERE m.chat_id=? AND m.msg_id>=? AND v.message_id IS NULL
            ORDER BY m.ts, m.msg_id""",
         (chat_id, from_msg_id),
     ).fetchall()
-    pending_texts = [render([r], names, aliases=aliases) for r in pending]
+    pending_texts = passage_texts(conn, chat_id, pending, names, aliases)
     return EmbedJob(
         chat_id=chat_id,
         n_windows=len(rows),
@@ -231,6 +373,8 @@ def reindex(conn: sqlite3.Connection, chat_id: retrieve.ChatId = None, progress:
     for job in jobs:
         vecs = embed.encode_passages(job.pending_texts, progress=progress) if job.pending_texts else None
         total += apply_job(conn, job, vecs)
+    if chat_id is None:
+        mark_embed_passage(conn)
     retrieve.invalidate_cache()
     return {"chats": len(jobs), "windows": total}
 
@@ -310,6 +454,7 @@ def update(
     which is how a live edit of a just-indexed message refreshes its window.
     A positive lookback also runs when only edits, not new messages, are pending.
     """
+    warn_stale_embeddings(conn)
     jobs = plan_update(conn, chat_id, lookback_days=lookback_days, force=force)
     total_windows = 0
     for job in jobs:

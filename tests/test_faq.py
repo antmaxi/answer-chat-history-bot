@@ -100,6 +100,10 @@ class TestPageUrl:
 
 
 class TestIndexAndSearch:
+    def test_inflected_visa_matches_keyword(self, conn, fake_embed):
+        faq.index_markdown(conn, {"inbox/Визы.md": "# Визы\n\nДля въезда нужны визы.\n"})
+        assert faq._keyword_ids(conn, "виза", 5)
+
     def test_fts_finds_the_section(self, conn, fake_embed, faq_on):
         _index(conn)
         hits = faq.search(conn, "entsorgungskalender")

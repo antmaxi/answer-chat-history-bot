@@ -35,18 +35,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 );
 
 -- Document frequency per term (messages containing it). Used by /stats a b.
+-- Terms are stems: triggers index stem_text(), not the raw message body.
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_vocab USING fts5vocab(messages_fts, row);
 
--- Keep the FTS index in sync with the messages table.
+-- Keep the FTS index in sync with the messages table. stem_text() is a
+-- connection function registered in connect(); FTS5 'rebuild' would re-read
+-- raw messages.text and undo the stems, so do not use it.
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-  INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);
+  INSERT INTO messages_fts (rowid, text) VALUES (new.id, stem_text(new.text));
 END;
 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-  INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', old.id, stem_text(old.text));
 END;
 CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
-  INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
-  INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);
+  INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', old.id, stem_text(old.text));
+  INSERT INTO messages_fts (rowid, text) VALUES (new.id, stem_text(new.text));
 END;
 
 CREATE TABLE IF NOT EXISTS windows (
@@ -156,15 +159,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS faq_fts USING fts5(
 );
 
 CREATE TRIGGER IF NOT EXISTS faq_chunks_ai AFTER INSERT ON faq_chunks BEGIN
-  INSERT INTO faq_fts (rowid, text) VALUES (new.id, new.text);
+  INSERT INTO faq_fts (rowid, text) VALUES (new.id, stem_text(new.text));
 END;
 CREATE TRIGGER IF NOT EXISTS faq_chunks_ad AFTER DELETE ON faq_chunks BEGIN
-  INSERT INTO faq_fts (faq_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO faq_fts (faq_fts, rowid, text) VALUES ('delete', old.id, stem_text(old.text));
 END;
 CREATE TRIGGER IF NOT EXISTS faq_chunks_au AFTER UPDATE ON faq_chunks BEGIN
-  INSERT INTO faq_fts (faq_fts, rowid, text) VALUES ('delete', old.id, old.text);
-  INSERT INTO faq_fts (rowid, text) VALUES (new.id, new.text);
+  INSERT INTO faq_fts (faq_fts, rowid, text) VALUES ('delete', old.id, stem_text(old.text));
+  INSERT INTO faq_fts (rowid, text) VALUES (new.id, stem_text(new.text));
 END;
+
+-- Migration markers (fts_stem, embed_passage). Not part of the chat corpus.
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS faq_vecs (
   chunk_id INTEGER PRIMARY KEY REFERENCES faq_chunks(id) ON DELETE CASCADE,
@@ -300,6 +309,9 @@ def _configure(conn: sqlite3.Connection, *, wal: bool) -> None:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(f"PRAGMA journal_mode={'WAL' if wal else 'DELETE'}")
     conn.execute("PRAGMA foreign_keys=ON")
+    from .stem import stem_text
+
+    conn.create_function("stem_text", 1, stem_text, deterministic=True)
 
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -321,6 +333,92 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) 
     return True
 
 
+# Bump when the stemmer or what it indexes changes. Old files rebuild FTS once.
+FTS_STEM_VERSION = "snowball-v1"
+
+
+def meta_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return None if row is None else row[0]
+
+
+def meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        """INSERT INTO meta (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (key, value),
+    )
+    conn.commit()
+
+
+def _rebuild_stemmed_fts(conn: sqlite3.Connection) -> None:
+    """Drop keyword indexes and refill them with stem_text() output.
+
+    CREATE TRIGGER IF NOT EXISTS will not replace triggers already stored in
+    an older file, and those indexed the raw body. FTS5 'rebuild' re-reads
+    the content table and would undo the stems, so this walks the rows.
+    """
+    n_msg = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+    n_faq = conn.execute("SELECT count(*) FROM faq_chunks").fetchone()[0]
+    if n_msg or n_faq:
+        log.info("rebuilding stemmed FTS (%s messages, %s faq chunks)", n_msg, n_faq)
+    conn.executescript(
+        """
+        DROP TRIGGER IF EXISTS messages_ai;
+        DROP TRIGGER IF EXISTS messages_ad;
+        DROP TRIGGER IF EXISTS messages_au;
+        DROP TABLE IF EXISTS messages_fts_vocab;
+        DROP TABLE IF EXISTS messages_fts;
+
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+          text, content='messages', content_rowid='id', tokenize='unicode61'
+        );
+        CREATE VIRTUAL TABLE messages_fts_vocab USING fts5vocab(messages_fts, row);
+
+        CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+          INSERT INTO messages_fts (rowid, text) VALUES (new.id, stem_text(new.text));
+        END;
+        CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+          INSERT INTO messages_fts (messages_fts, rowid, text)
+            VALUES ('delete', old.id, stem_text(old.text));
+        END;
+        CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+          INSERT INTO messages_fts (messages_fts, rowid, text)
+            VALUES ('delete', old.id, stem_text(old.text));
+          INSERT INTO messages_fts (rowid, text) VALUES (new.id, stem_text(new.text));
+        END;
+
+        DROP TRIGGER IF EXISTS faq_chunks_ai;
+        DROP TRIGGER IF EXISTS faq_chunks_ad;
+        DROP TRIGGER IF EXISTS faq_chunks_au;
+        DROP TABLE IF EXISTS faq_fts;
+
+        CREATE VIRTUAL TABLE faq_fts USING fts5(
+          text, content='faq_chunks', content_rowid='id', tokenize='unicode61'
+        );
+        CREATE TRIGGER faq_chunks_ai AFTER INSERT ON faq_chunks BEGIN
+          INSERT INTO faq_fts (rowid, text) VALUES (new.id, stem_text(new.text));
+        END;
+        CREATE TRIGGER faq_chunks_ad AFTER DELETE ON faq_chunks BEGIN
+          INSERT INTO faq_fts (faq_fts, rowid, text)
+            VALUES ('delete', old.id, stem_text(old.text));
+        END;
+        CREATE TRIGGER faq_chunks_au AFTER UPDATE ON faq_chunks BEGIN
+          INSERT INTO faq_fts (faq_fts, rowid, text)
+            VALUES ('delete', old.id, stem_text(old.text));
+          INSERT INTO faq_fts (rowid, text) VALUES (new.id, stem_text(new.text));
+        END;
+        """
+    )
+    conn.execute(
+        "INSERT INTO messages_fts(rowid, text) SELECT id, stem_text(text) FROM messages"
+    )
+    conn.execute(
+        "INSERT INTO faq_fts(rowid, text) SELECT id, stem_text(text) FROM faq_chunks"
+    )
+    conn.commit()
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Apply additive schema changes that CREATE IF NOT EXISTS cannot cover.
 
@@ -330,6 +428,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "query_log", "user_id", "INTEGER")
     ensure_column(conn, "query_log", "search_ms", "INTEGER")
     ensure_column(conn, "query_log", "llm_ms", "INTEGER")
+    if meta_get(conn, "fts_stem") != FTS_STEM_VERSION:
+        _rebuild_stemmed_fts(conn)
+        meta_set(conn, "fts_stem", FTS_STEM_VERSION)
 
 
 def _iso_utc(ts: int | None) -> str | None:

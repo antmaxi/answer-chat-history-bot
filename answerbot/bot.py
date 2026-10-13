@@ -155,6 +155,8 @@ async def index_chats(
         else:
             jobs = await _db(index.plan_update, conn, chat_id, lookback, force)
         result = await _apply_jobs(jobs, progress)
+        if full:
+            await _db(index.mark_embed_passage, conn)
         if refresh_faq and config.FAQ_ENABLED:
             try:
                 sha = await asyncio.to_thread(faq.remote_sha)
@@ -1298,6 +1300,7 @@ async def _notify_status(bot: Bot, key: str, **kwargs) -> None:
 
 async def _on_startup(bot: Bot) -> None:
     log.info("bot is starting")
+    await _db(index.warn_stale_embeddings, conn)
     await _notify_status(bot, "bot_starting")
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(logconfig.asyncio_handler)

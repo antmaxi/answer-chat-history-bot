@@ -16,14 +16,13 @@ from datetime import datetime, timezone
 import numpy as np
 
 from . import config, embed, people, thread
+from .stem import is_kept_term, matches_keep_stem, stem_token
 from .timerange import TimeRange, parse_time_range
 
 # None = every chat; a tuple of ids is an allow-list (empty means no chats).
 # values: message ids (messages.id), vectors, ts per message
 _vec_cache: dict[tuple[int, ...] | None, tuple[list[int], np.ndarray, np.ndarray]] = {}
 _df_cache: dict[str, int] = {}
-_KEEP_STEM_MIN = 4
-_KEEP_INFLECT_MIN = 5
 
 # A single chat, an allow-list, or None for “no restriction” (CLI default).
 # An empty sequence is *not* None: it means the caller may see zero chats.
@@ -91,28 +90,6 @@ def _doc_frequency(conn: sqlite3.Connection, token: str) -> int:
     return n
 
 
-def matches_keep_stem(token: str, stem: str) -> bool:
-    """True if `token` is `stem` or an inflected/prefixed form of it."""
-    token, stem = token.lower(), stem.lower()
-    if not stem:
-        return False
-    if token == stem:
-        return True
-    if len(stem) >= _KEEP_STEM_MIN and (
-        token.startswith(stem) or stem.startswith(token)
-    ):
-        return True
-    n = min(len(token), len(stem))
-    return n >= _KEEP_INFLECT_MIN and token[: n - 1] == stem[: n - 1]
-
-
-def is_kept_term(token: str, stems: Sequence[str] | None = None) -> bool:
-    """Protected from DF stopwording (place names, etc.)."""
-    if stems is None:
-        stems = config.STOPWORD_KEEP
-    return any(matches_keep_stem(token, stem) for stem in stems)
-
-
 # How many DF-band terms /stats a b will list (Telegram 4096; rest are counted).
 TERM_DF_LIST_LIMIT = 200
 
@@ -176,37 +153,52 @@ def term_df_band(
     return n, terms, match_count
 
 
-def fts_query(conn: sqlite3.Connection, question: str) -> str:
-    """Turn free text into a safe, informative FTS5 OR-query.
+def build_fts_query(question: str, total: int, df) -> str:
+    """FTS5 OR-query of stems, with high-DF terms removed.
 
-    Two things to get right. First, user questions contain quotes, parentheses
-    and the words AND/OR/NOT, all of which are FTS5 syntax — quoting each token
-    individually sidesteps the lot.
+    `df` is document frequency of a stem in whichever index is being searched
+    (messages or FAQ). STOPWORD_KEEP is decided on the original token, then
+    the stem is what gets matched — the index stores stems too.
 
-    Second, an unfiltered OR-query matches every window in the corpus on
-    stopwords alone ("how", "the", "for"), which turns the keyword ranking into
-    noise that then dilutes the vector ranking during fusion. So drop terms that
-    appear in a large fraction of messages. Deriving that from the corpus rather
-    than a hardcoded English stopword list keeps it working on any language.
+    Quoting each stem sidesteps quotes, parentheses, and the words AND/OR/NOT
+    in the question. An unfiltered OR-query would match the whole corpus on
+    particles alone and dilute fusion, so terms that appear in a large
+    fraction of rows are dropped. If that would drop everything, the stems
+    are kept: a noisy keyword arm is better than none.
     """
     tokens = re.findall(r"\w+", question, flags=re.UNICODE)
     tokens = [t.lower() for t in tokens if len(t) > 1]
     if not tokens:
         return ""
 
-    total = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+    pairs = [(t, stem_token(t)) for t in tokens]
     if total:
         cutoff = total * config.STOPWORD_DF_RATIO
-        informative = [
-            t
-            for t in tokens
-            if is_kept_term(t) or _doc_frequency(conn, t) <= cutoff
+        chosen = [
+            stem
+            for token, stem in pairs
+            if stem and (is_kept_term(token) or df(stem) <= cutoff)
         ]
         # If every term is common, the question is all stopwords — keep them
         # rather than returning nothing and losing the keyword arm entirely.
-        tokens = informative or tokens
+        if not chosen:
+            chosen = [stem for _, stem in pairs if stem]
+    else:
+        chosen = [stem for _, stem in pairs if stem]
 
-    return " OR ".join(f'"{t}"' for t in tokens)
+    seen: list[str] = []
+    for stem in chosen:
+        if stem not in seen:
+            seen.append(stem)
+    if not seen:
+        return ""
+    return " OR ".join(f'"{stem}"' for stem in seen)
+
+
+def fts_query(conn: sqlite3.Connection, question: str) -> str:
+    """Turn free text into a safe, informative FTS5 OR-query over message stems."""
+    total = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+    return build_fts_query(question, total, lambda token: _doc_frequency(conn, token))
 
 
 def keyword_search(

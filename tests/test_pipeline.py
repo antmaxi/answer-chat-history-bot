@@ -5,6 +5,7 @@ Retrieval quality is checked by hand with `python -m answerbot.search`.
 """
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -15,8 +16,10 @@ from answerbot import config, db, index, people, retrieve
 from answerbot.timerange import TimeRange
 from answerbot.answer import (
     Answer,
+    NOT_FOUND,
     SYSTEM,
     answer as run_answer,
+    apply_grounding,
     build_context,
     chat_label,
     complete_answer,
@@ -27,7 +30,7 @@ from answerbot.answer import (
 from answerbot.index import build_windows, render
 from answerbot.ingest import live
 from answerbot.ingest.export import flatten_text, parse_sender_id, parse_ts
-from answerbot.retrieve import Hit, fts_query, matches_keep_stem, term_df_band
+from answerbot.retrieve import Hit, fts_query, keyword_search, matches_keep_stem, term_df_band
 from answerbot.thread import (
     dedupe_seeds,
     expand_thread,
@@ -317,8 +320,9 @@ class TestFtsQuery:
             )
         conn.commit()
         q = fts_query(conn, "да цюрихе швейцарии")
-        assert '"цюрихе"' in q
-        assert '"швейцарии"' in q
+        assert '"цюрих"' in q
+        assert '"швейцария"' in q
+        assert '"цюрихе"' not in q
         assert '"да"' not in q
 
     def test_all_stopwords_keeps_terms(self, conn):
@@ -331,6 +335,20 @@ class TestFtsQuery:
 
     def test_no_usable_tokens(self, conn):
         assert fts_query(conn, "?! -") == ""
+
+    def test_russian_inflection_matches(self, conn):
+        seed(conn, [(1, 1, "для въезда нужны визы")])
+        assert fts_query(conn, "виза") == fts_query(conn, "визы")
+        assert keyword_search(conn, "виза", 1, 5)
+
+    def test_digit_token_is_not_stemmed(self, conn):
+        seed(conn, [(1, 1, "password HappyMonday2024")])
+        assert fts_query(conn, "HappyMonday2024") == '"happymonday2024"'
+        assert keyword_search(conn, "HappyMonday2024", 1, 5)
+
+    def test_english_inflection_matches(self, conn):
+        seed(conn, [(1, 1, "the weekly meeting moved")])
+        assert keyword_search(conn, "meetings", 1, 5)
 
 
 class TestKeepStem:
@@ -401,13 +419,13 @@ class TestTermDfBand:
         for i in range(10):
             conn.execute(
                 "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1,?,?, 'A', ?)",
-                (i, i, f"token{i} shared"),
+                (i, i, f"token{i} qqqq"),
             )
         conn.commit()
         _, terms, match_count = term_df_band(conn, 0, 100, limit=3)
         assert len(terms) == 3
         assert match_count > 3
-        assert terms[0][0] == "shared"
+        assert terms[0][0] == "qqqq"
 
 
 def hit(idx: int) -> Hit:
@@ -486,6 +504,50 @@ class TestAnswerCitations:
         html = format_sources_html(a)
         assert "A &lt;B&gt; &amp; C" in html
         assert "A <B>" not in html
+
+    def test_not_found_hides_sources_but_keeps_hits(self):
+        a = apply_grounding(Answer(NOT_FOUND, [hit(1), hit(2)]))
+        assert a.abstain
+        assert [h.first_msg for h in a.hits] == [1, 2]
+        assert a.sources_block() == ""
+        assert a.primary_link() is None
+        assert format_sources_html(a) == ""
+
+    def test_russian_refusal_hides_sources(self):
+        text = "Не нашёл этого в истории чата или FAQ."
+        a = apply_grounding(Answer(text, [hit(1)]))
+        assert a.abstain
+        assert a.text == text
+        assert a.sources_block() == ""
+
+    def test_supported_number_is_kept(self):
+        body = "[2026-03-14 10:00] Anna: you each owe 200 lari"
+        h = Hit(1, 1, 1, 1, 0, 0, "Anna", body, 0.1)
+        a = apply_grounding(Answer("You each owe 200 lari [W1].", [h]))
+        assert not a.abstain
+        assert "200" in a.text
+        assert a.primary_link() == h.link()
+
+    def test_invented_code_becomes_not_found(self):
+        a = apply_grounding(Answer("the code is `hunter2`", [hit(1)]))
+        assert a.abstain
+        assert "couldn't find" in a.text.lower()
+        assert a.sources_block() == ""
+        assert a.hits
+
+    def test_paraphrase_without_specifics_keeps_source_fallback(self):
+        a = apply_grounding(Answer("Anna said the trip was cheap", [hit(1), hit(2)]))
+        assert not a.abstain
+        assert a.primary_link() == hit(1).link()
+        assert "W1" in a.sources_block()
+
+    def test_year_only_in_the_timestamp_is_not_support(self):
+        body = "[2026-03-14 10:00] Anna: see you there"
+        h = Hit(1, 1, 1, 1, 0, 0, "Anna", body, 0.1)
+        a = apply_grounding(Answer("That was in 2026 [W1].", [h]))
+        assert a.abstain
+        assert "couldn't find" in a.text.lower()
+        assert format_sources_html(a) == ""
 
 
 class TestAnswerMarkdown:
@@ -1052,7 +1114,10 @@ class TestInterleavedSearch:
                 v /= n
             return v
 
+        seen: list[str] = []
+
         def fake_passages(texts, batch_size=64, progress=False, **_k):
+            seen.extend(texts)
             return np.stack([pack_text(t) for t in texts])
 
         monkeypatch.setattr("answerbot.embed.encode_passages", fake_passages)
@@ -1062,16 +1127,22 @@ class TestInterleavedSearch:
             "INSERT INTO messages (chat_id, msg_id, ts, sender, sender_id, text) "
             "VALUES (1, ?, ?, ?, ?, ?)",
             [
-                (1, 100, "Anna", 10, "ski trip is 200 lari each"),
-                (2, 101, "Giorgi", 20, "wifi password is hunter2"),
-                (3, 102, "Anna", 10, "chalet sleeps 8"),
-                (4, 103, "Giorgi", 20, "password, capital H"),
+                (1, 100, "Anna", 10, "ski trip is 200 lari each for the weekend away"),
+                (2, 101, "Giorgi", 20, "wifi password is hunter2, do not post it publicly"),
+                (3, 102, "Anna", 10, "chalet sleeps eight and has room for the whole group"),
+                (4, 103, "Giorgi", 20, "password, capital H, then the rest is as written"),
             ],
         )
         people.record(conn, 10, "Anna", None, "live")
         people.record(conn, 20, "Giorgi", None, "live")
         conn.commit()
         index.reindex(conn, progress=False)
+
+        wifi_passages = [t for t in seen if "hunter2" in t.lower()]
+        chalet_passages = [t for t in seen if "chalet" in t.lower()]
+        assert wifi_passages
+        assert all("lari" not in t.lower() for t in wifi_passages)
+        assert all("hunter2" not in t.lower() for t in chalet_passages)
 
         hits = retrieve.search(conn, "wifi password", chat_id=1)
         assert hits
@@ -1303,6 +1374,121 @@ class TestRecency:
         assert {h.ts_end for h in hits} >= {old, new}
 
 
+def _insert_full(conn, rows):
+    """rows: (msg_id, ts, sender, sender_id, reply_to, text)."""
+    conn.executemany(
+        """INSERT INTO messages
+           (chat_id, msg_id, ts, sender, sender_id, reply_to, text)
+           VALUES (1, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+    conn.commit()
+
+
+class TestEmbedPassage:
+    def test_short_line_includes_the_previous_message_only(self, conn, fake_embed):
+        _insert_full(
+            conn,
+            [
+                (1, 0, "Anna", 10, None, "ancient budget meeting notes from last month really"),
+                (2, 2000, "Giorgi", 20, None, "how much was the ski trip in the end though"),
+                (3, 2010, "Anna", 10, None, "200"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        texts = [t for batch in fake_embed for t in batch]
+        short = [t for t in texts if re.search(r"\b200\b", t)]
+        assert len(short) == 1
+        assert "how much was the ski trip" in short[0]
+        assert "ancient budget" not in short[0]
+
+    def test_long_message_skips_the_other_speaker(self, conn, fake_embed):
+        _insert_full(
+            conn,
+            [
+                (1, 0, "Anna", 10, None, "wifi password is hunter2, do not post it publicly"),
+                (
+                    2,
+                    10,
+                    "Giorgi",
+                    20,
+                    None,
+                    "the chalet sleeps eight people tonight and has a big kitchen",
+                ),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        texts = [t for batch in fake_embed for t in batch]
+        chalet = [t for t in texts if "chalet" in t.lower()]
+        wifi = [t for t in texts if "hunter2" in t.lower()]
+        assert chalet and wifi
+        assert all("hunter2" not in t.lower() for t in chalet)
+        assert all("chalet" not in t.lower() for t in wifi)
+
+    def test_same_speaker_context_skips_the_interleaved_line(self, conn, fake_embed):
+        _insert_full(
+            conn,
+            [
+                (1, 0, "Anna", 10, None, "ski trip is 200 lari each for the weekend away"),
+                (2, 5, "Giorgi", 20, None, "wifi password is hunter2, do not post it publicly"),
+                (3, 10, "Anna", 10, None, "chalet sleeps eight and has room for the whole group"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        texts = [t for batch in fake_embed for t in batch]
+        anna = [t for t in texts if "chalet" in t.lower()]
+        giorgi = [t for t in texts if "hunter2" in t.lower()]
+        assert any("200 lari" in t for t in anna)
+        assert all("hunter2" not in t.lower() for t in anna)
+        assert all("lari" not in t.lower() for t in giorgi)
+
+    def test_reply_parent_across_a_gap_is_included_once(self, conn, fake_embed):
+        _insert_full(
+            conn,
+            [
+                (1, 0, "Anna", 10, None, "what is the wifi password please"),
+                (2, 10_000, "Giorgi", 20, 1, "HappyMonday2024"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        texts = [t for batch in fake_embed for t in batch]
+        got = [t for t in texts if "HappyMonday2024" in t]
+        assert len(got) == 1
+        assert got[0].lower().count("wifi password") == 1
+
+    def test_incremental_range_still_sees_earlier_context(self, conn, fake_embed):
+        _insert_full(
+            conn,
+            [(1, 1000, "Anna", 10, None, "budget for the offsite is settled")],
+        )
+        index.reindex(conn, progress=False)
+        fake_embed.clear()
+        _insert_full(conn, [(2, 1020, "Giorgi", 20, None, "200")])
+        job = index.plan_from(conn, 1, 2)
+        assert job is not None
+        assert len(job.pending_ids) == 1
+        blob = "\n".join(job.pending_texts)
+        assert "budget for the offsite" in blob
+        assert re.search(r"\b200\b", blob)
+        assert fake_embed == []
+
+    def test_full_reindex_marks_passage_version(self, conn, fake_embed, caplog):
+        seed(conn, [(1, 1, "hello there friend")])
+        index.reindex(conn, progress=False)
+        assert db.meta_get(conn, "embed_passage") == index.EMBED_PASSAGE_VERSION
+        with caplog.at_level("WARNING", logger="answerbot"):
+            index.update(conn, force=True)
+        assert "contextual passages" not in caplog.text
+
+    def test_update_warns_when_passage_version_is_stale(self, conn, fake_embed, caplog):
+        seed(conn, [(1, 1, "hello there friend")])
+        index.reindex(conn, progress=False)
+        db.meta_set(conn, "embed_passage", "line-v0")
+        with caplog.at_level("WARNING", logger="answerbot"):
+            index.update(conn, force=True)
+        assert "contextual passages" in caplog.text
+
+
 class TestConnect:
     def test_checkpoint_on_memory_is_a_no_op(self, conn):
         db.checkpoint(conn)
@@ -1340,6 +1526,31 @@ class TestConnect:
         path.write_bytes(b"not a sqlite database")
         with pytest.raises(sqlite3.DatabaseError, match="chat.db"):
             db.connect(path)
+
+    def test_missing_stem_version_rebuilds_fts(self, tmp_path):
+        path = tmp_path / "old.db"
+        conn = db.connect(path)
+        conn.execute(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1,1,1,'A','нужны визы')"
+        )
+        conn.commit()
+        mid = conn.execute("SELECT id FROM messages").fetchone()[0]
+        conn.execute("DELETE FROM meta WHERE key='fts_stem'")
+        conn.execute(
+            "INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', ?, stem_text(?))",
+            (mid, "нужны визы"),
+        )
+        conn.execute(
+            "INSERT INTO messages_fts(rowid, text) VALUES (?, ?)",
+            (mid, "нужны визы"),
+        )
+        conn.commit()
+        conn.close()
+        retrieve.invalidate_cache()
+        conn = db.connect(path)
+        assert db.meta_get(conn, "fts_stem") == db.FTS_STEM_VERSION
+        assert keyword_search(conn, "виза", 1, 5)
+        conn.close()
 
 
 class TestEncodeProgress:

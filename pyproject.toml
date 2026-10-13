@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "sentence-transformers>=3.0",
     "numpy>=1.26",
+    "snowballstemmer>=2.2",
     "anthropic>=0.40",
     "google-genai>=1.0",
     "python-dotenv>=1.0",

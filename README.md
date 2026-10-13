@@ -245,6 +245,16 @@ Local. A full `index` is required after changing the model or dimension.
   model; wrong values make search silently useless.
 - **`EMBED_THREADS`** (`1`) — CPU threads for the local embedding model.
   The bot also warms the model at startup so the first question is not the stall.
+- **`EMBED_CONTEXT_MSGS`** (`2`) — earlier lines from the **same sender**, within
+  `THREAD_SAME_SPEAKER_SECONDS`, included in that message's vector. The reply
+  parent is always included (one hop). A line shorter than
+  `EMBED_SHORT_CHARS` with no reply also takes the single previous message,
+  so a bare "200" still sits next to the question. Other people's neighbouring
+  lines are not prepended, so two topics in the same minute stay apart.
+  Changing this needs a full `index` (or `/reindex full`). A tail update
+  leaves older vectors on the previous recipe and logs a warning until then.
+- **`EMBED_SHORT_CHARS`** (`40`) — messages shorter than this, with no
+  `reply_to`, take that one previous line.
 - **`HF_TOKEN`** — Hugging Face access token for pulling the embed model
   (gated repos, or Hub rate limits). Also accepted as `HUGGING_FACE_HUB_TOKEN`.
   Used at image build (`docker compose build`) and whenever a model is loaded
@@ -283,11 +293,17 @@ Retrieval below). Window size caps also bound that excerpt.
 ### Retrieval
 
 Hybrid keyword (FTS5) + vector search over **messages**, merged with
-reciprocal rank fusion. Each ranked message is expanded into a thread using
-replies, @mentions, embedding similarity to the seed, and (when a line has
-no vector) the same speaker nearby. Overlapping expansions are merged.
-A full `index` is required after this change (vectors moved from windows
-to messages).
+reciprocal rank fusion. Keyword search stems Russian and English with
+Snowball on both the index and the query, so «виза» matches «визы» and
+`meeting` matches `meetings`. Tokens that contain a digit are left intact
+(`HappyMonday2024`). `STOPWORD_KEEP` names are stored as the configured
+stem. `/stats a b` lists those stems, not the surface forms. Each ranked
+message is expanded into a thread using replies, @mentions, embedding
+similarity to the seed, and (when a line has no vector) the same speaker
+nearby. Overlapping expansions are merged. A full `index` is required after
+the vectors moved from windows to messages, and again after the passage
+recipe above changes. Opening an older database rebuilds the FTS index once;
+it does not re-embed.
 
 - **`TOP_K`** (`10`) — threads ranked by fusion before the excerpt cap.
 - **`MIN_K`** (`10`) / **`MAX_K`** (`10`) — excerpts sent to the LLM. Always
@@ -346,6 +362,15 @@ chat-history questions). Refresh happens on `/reindex`,
 Answer generation is the only cloud LLM call. See
 [Switching the answer model](#switching-the-answer-model) for provider
 setup.
+
+A reply that says it couldn't find the answer (the canonical English
+sentence, or a short Russian refusal) is shown **without** the source list
+or the jump link. The retrieved windows are still stored in `query_log`.
+Numbers, times, backtick spans, and tokens that mix letters and digits are
+checked against the excerpts with timestamp prefixes ignored. If any of
+those is missing from every excerpt, the reply is replaced with the
+not-found sentence and the sources are hidden. A summary with no such
+token is kept even when it has no `[W#]` tag.
 
 - **`LLM_PROVIDER`** (`claude`) — `claude`, `gemini`, `groq`, `openrouter`,
   `ollama`, or `cursor`.

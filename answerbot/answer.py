@@ -6,12 +6,15 @@ that guesses is one people mute after a week.
 """
 
 import html as html_lib
+import logging
 import re
 import sqlite3
 import time
 from dataclasses import dataclass
 
 from . import config, db, logconfig, retrieve
+
+log = logging.getLogger("answerbot")
 from .ingest import live
 from .llm import LLM, get_llm
 
@@ -50,10 +53,20 @@ _ITALIC = re.compile(r"(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)")
 _SLOT = "\x00{}\x00"
 
 
+# Times, integers of 2+ digits, backtick spans, and letter+digit tokens.
+_TIME = re.compile(r"\b\d{1,2}:\d{2}\b")
+_INT = re.compile(r"\b\d{2,}\b")
+_TICK = re.compile(r"`([^`\n]+)`")
+_REFUSAL_RU = re.compile(r"не наш[её]л|не нашлось", re.IGNORECASE)
+_REFUSAL_TOPIC = re.compile(r"истор|faq", re.IGNORECASE)
+_STAMP = re.compile(r"\[20\d{2}-\d{2}-\d{2}[^\]]*\]")
+
+
 @dataclass
 class Answer:
     text: str
     hits: list[retrieve.Hit]
+    abstain: bool = False
 
     def cited_indices(self) -> list[int]:
         """1-based [W#] tags the model used, bounded to windows that exist.
@@ -74,7 +87,11 @@ class Answer:
         Prefer the windows the model cited. If it cited none — some answers read
         naturally without inline tags — fall back to the top retrieved windows,
         so the reader always gets links to the messages the answer drew on.
+        A not-found reply lists nothing: the hits stay on the object for the
+        query log, but they are not presented as sources.
         """
+        if self.abstain:
+            return []
         idx = self.cited_indices() or list(range(1, min(limit, len(self.hits)) + 1))
         return [(i, self.hits[i - 1]) for i in idx][:limit]
 
@@ -90,6 +107,8 @@ class Answer:
         otherwise render as two identical t.me URLs. Indices stay so [W#] in
         the answer still match; cited is True if any window in the group was.
         """
+        if self.abstain:
+            return []
         groups: dict[str, tuple[list[int], retrieve.Hit, bool]] = {}
         order: list[str] = []
         for i, h, was_cited in self.all_sources():
@@ -230,6 +249,95 @@ def build_context(
     return "\n\n".join(blocks)
 
 
+def looks_like_refusal(text: str, n_hits: int) -> bool:
+    """True when the model says the excerpts don't contain the answer.
+
+    The canonical English sentences always count. A short reply with no
+    in-range [W#] also counts when it uses that English phrase, or a Russian
+    "couldn't find" together with "history" or "FAQ".
+    """
+    stripped = text.strip()
+    if stripped in (NOT_FOUND, NOT_FOUND_FAQ):
+        return True
+    if len(stripped) > 400:
+        return False
+    cited = {int(n) for n in CITATION.findall(stripped)}
+    if any(1 <= i <= n_hits for i in cited):
+        return False
+    if "couldn't find that" in stripped.casefold():
+        return True
+    return bool(_REFUSAL_RU.search(stripped) and _REFUSAL_TOPIC.search(stripped))
+
+
+def distinctive_tokens(text: str) -> list[str]:
+    """Numbers, times, code spans, and letter+digit tokens the model must not invent.
+
+    [W#] tags are removed first so a citation index is not treated as a fact.
+    Ordinary words are not included: the prompt asks for a summary, not a quote.
+    """
+    ticks = [span.strip() for span in _TICK.findall(text) if len(span.strip()) >= 3]
+    plain = _TICK.sub(" ", text)
+    plain = CITATION_MARKUP.sub(" ", plain)
+    plain = plain.replace("*", " ").replace("_", " ")
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(token: str) -> None:
+        key = token.casefold()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        found.append(token)
+
+    for span in ticks:
+        add(span)
+    for match in _TIME.findall(plain):
+        add(match)
+    for match in _INT.findall(plain):
+        add(match)
+    for token in re.findall(r"\w+", plain, flags=re.UNICODE):
+        if (
+            len(token) >= 3
+            and any(ch.isalpha() for ch in token)
+            and any(ch.isdigit() for ch in token)
+        ):
+            add(token)
+    return found
+
+
+def _evidence(hits: list[retrieve.Hit]) -> str:
+    """Excerpt text without timestamp prefixes, so a stamp year is not support."""
+    parts = [_STAMP.sub(" ", hit.text) for hit in hits]
+    return "\n".join(parts).casefold()
+
+
+def ungrounded_tokens(text: str, hits: list[retrieve.Hit]) -> list[str]:
+    """Distinctive tokens that appear in the answer and in none of the excerpts."""
+    evidence = _evidence(hits)
+    return [token for token in distinctive_tokens(text) if token.casefold() not in evidence]
+
+
+def apply_grounding(result: Answer) -> Answer:
+    """Hide sources on a refusal, and replace answers that invent specifics.
+
+    Missing [W#] tags alone do not abstain: a paraphrase with no number is
+    still shown, with the usual fallback links. A number, time, code span,
+    or letter+digit token that is in none of the retrieved excerpts is
+    treated as invented.
+    """
+    if not result.hits:
+        return result
+    if looks_like_refusal(result.text, len(result.hits)):
+        result.abstain = True
+        return result
+    missing = ungrounded_tokens(result.text, result.hits)
+    if not missing:
+        return result
+    for token in missing:
+        log.info("ungrounded token %s", token)
+    return Answer(not_found_text(), result.hits, abstain=True)
+
+
 def complete_answer(
     question: str,
     hits: list[retrieve.Hit],
@@ -239,11 +347,11 @@ def complete_answer(
 ) -> Answer:
     """LLM call only — no DB. The bot runs this off the SQLite lock."""
     if not hits:
-        return Answer(not_found_text(), [])
+        return Answer(not_found_text(), [], abstain=True)
     llm = llm or get_llm()
     user = f"Excerpts:\n\n{build_context(hits, chat_titles)}\n\n---\nQuestion: {question}"
     text = llm.complete(SYSTEM, user)
-    return Answer(text, hits)
+    return apply_grounding(Answer(text, hits))
 
 
 def _record(
@@ -282,7 +390,7 @@ def answer(
     t0 = time.monotonic()
     chats = retrieve.normalize_chat_ids(chat_id)
     if chats is not None and not chats:
-        result = Answer(not_found_text(), [])
+        result = Answer(not_found_text(), [], abstain=True)
         _record(conn, question, chat_id, result, t0, llm)
         return result
 
