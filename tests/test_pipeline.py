@@ -23,6 +23,7 @@ from answerbot.answer import (
     build_context,
     chat_label,
     complete_answer,
+    append_spare_spoilers,
     format_answer_body,
     format_sources_html,
     markdown_to_html,
@@ -1315,6 +1316,97 @@ class TestCapHits:
         # An explicit top_k skips it; STREAM is two bursts, so two threads.
         assert len(hits) == 2
         assert len(retrieve.search(conn, "m1", chat_id=1)) == 1
+
+
+def _isolated(n: int):
+    gap = config.THREAD_RADIUS_SECONDS + 10
+    return [(i, i * gap, f"pangolin number {i}") for i in range(1, n + 1)]
+
+
+class TestAdminExtra:
+    def test_spare_matches_production_and_stops_at_30(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "TOP_K", 10)
+        monkeypatch.setattr(config, "MIN_K", 10)
+        monkeypatch.setattr(config, "MAX_K", 10)
+        monkeypatch.setattr(config, "COSINE_MIN", 0.0)
+        seed(conn, _isolated(50))
+        index.reindex(conn, progress=False)
+        prod = retrieve.search(conn, "pangolin", chat_id=1)
+        hits, extra = retrieve.search_with_extra(
+            conn, "pangolin", chat_id=1, extra_k=30
+        )
+        assert [h.msg_ids for h in hits] == [h.msg_ids for h in prod]
+        assert len(hits) == 10
+        assert len(extra) == 30
+        used = {h.msg_ids for h in hits}
+        assert used.isdisjoint({h.msg_ids for h in extra})
+
+    def test_wider_pool_does_not_change_the_answer_hits(
+        self, conn, fake_embed, monkeypatch
+    ):
+        monkeypatch.setattr(config, "TOP_K", 4)
+        monkeypatch.setattr(config, "MIN_K", 4)
+        monkeypatch.setattr(config, "MAX_K", 4)
+        monkeypatch.setattr(config, "COSINE_MIN", 0.0)
+        seed(conn, _isolated(50))
+        index.reindex(conn, progress=False)
+        prod = retrieve.search(conn, "pangolin", chat_id=1)
+        hits, extra = retrieve.search_with_extra(
+            conn, "pangolin", chat_id=1, extra_k=30
+        )
+        assert [h.msg_ids for h in hits] == [h.msg_ids for h in prod]
+        assert len(hits) == 4
+        assert len(extra) == 30
+        assert {h.msg_ids for h in hits}.isdisjoint({h.msg_ids for h in extra})
+
+    def test_cosine_drops_are_spare_not_lost(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "TOP_K", 10)
+        monkeypatch.setattr(config, "MIN_K", 2)
+        monkeypatch.setattr(config, "MAX_K", 10)
+        monkeypatch.setattr(config, "COSINE_MIN", 0.7)
+        seed(conn, _isolated(50))
+        index.reindex(conn, progress=False)
+        prod = retrieve.search(conn, "pangolin", chat_id=1)
+        hits, extra = retrieve.search_with_extra(
+            conn, "pangolin", chat_id=1, extra_k=30
+        )
+        assert len(prod) == 2
+        assert [h.msg_ids for h in hits] == [h.msg_ids for h in prod]
+        assert len(extra) == 30
+        assert {h.msg_ids for h in hits}.isdisjoint({h.msg_ids for h in extra})
+
+
+class TestSpareSpoilers:
+    def test_excerpt_is_under_a_spoiler_and_escaped(self):
+        h = Hit(1, 1, 5, 5, 1_700_000_000, 1_700_000_000, "A <B>", "secret <tag>", 0.2)
+        body, rest = append_spare_spoilers("The answer", [h], "Also retrieved (1)")
+        assert rest == []
+        assert body.startswith("The answer\n\n<b>Also retrieved (1)</b>\n<tg-spoiler>")
+        assert body.endswith("</tg-spoiler>")
+        assert "secret &lt;tag&gt;" in body
+        assert "<tag>" not in body
+        assert "A &lt;B&gt;" in body
+        assert "A <B>" not in body
+
+    def test_overflow_stays_in_closed_spoiler_messages(self):
+        hits = [
+            Hit(i, 1, i, i, 1_700_000_000, 1_700_000_000, "A <B>", f"mark{i} " + ("x" * 600), 0.1)
+            for i in range(1, 31)
+        ]
+        body, rest = append_spare_spoilers("A" * 3000, hits, "Also (30)")
+        chunks = [body] + rest
+        spoilers = [c for c in chunks if "<tg-spoiler>" in c]
+        assert spoilers
+        assert len(rest) >= 1
+        for chunk in spoilers:
+            assert chunk.count("<tg-spoiler>") == 1
+            assert chunk.count("</tg-spoiler>") == 1
+            assert len(chunk) <= 4000
+        blob = "\n".join(spoilers)
+        assert "A &lt;B&gt;" in blob
+        for i in range(1, 31):
+            assert f"mark{i}" in blob
+        assert "…" in blob
 
 
 class TestRecency:

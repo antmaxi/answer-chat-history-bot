@@ -312,6 +312,9 @@ it does not re-embed.
   10 excerpts. Lower them if you want the cosine trim.
 - **`COSINE_MIN`** (`0.7`) — cosine floor for extra excerpts after `MIN_K`.
   `0` disables the cutoff (always send `MAX_K`).
+- **`ADMIN_EXTRA_K`** (`30`) — when an admin asks, this many ranked excerpts
+  past the production cap are attached under a spoiler. The model still sees
+  only `MIN_K`..`MAX_K` (plus FAQ). `0` hides them.
 - **`THREAD_RADIUS_SECONDS`** (same as `WINDOW_GAP_SECONDS`) — how far from
   the seed to look for thread members (plus the seed's reply chain).
 - **`THREAD_COSINE_MIN`** (`0.65`) — a neighbour is kept when its embedding
@@ -438,8 +441,9 @@ token is kept even when it has no `[W#]` tag.
   comma-separated). Those accounts get `Bot is starting`, then
   `Bot started, stats: …` after setup, `Bot is down` DMs and
   ERROR logs with traceback; they can run `/reindex` and skip the answer
-  cooldown and hourly quotas. Open a DM with the bot first so it can write
-  to you.
+  cooldown and hourly quotas. Their answers also include up to
+  `ADMIN_EXTRA_K` retrieved excerpts the model did not see, under a spoiler.
+  Open a DM with the bot first so it can write to you.
 - **`GITHUB_REPO`** (`https://github.com/antmaxi/answer-chat-history-bot`)
   — source-code URL shown by `/info`.
 - **`DISPLAY_UTC_OFFSET_HOURS`** (`2`) — UTC offset for wall-clock times

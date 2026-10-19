@@ -225,6 +225,143 @@ def format_sources_html(
     return "\n".join(lines)
 
 
+_SPARE_PREVIEW = 500
+_SPARE_MESSAGE_LIMIT = 3900
+_ANSWER_HTML_LIMIT = 4000
+
+
+def _excerpt_preview(text: str, limit: int = _SPARE_PREVIEW) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _spare_block(
+    hit: retrieve.Hit,
+    *,
+    chat_titles: dict[int, str] | None,
+    include_chat: bool,
+) -> str:
+    when = html_lib.escape(hit.when(), quote=False)
+    speakers = html_lib.escape(hit.speakers, quote=False)
+    chat = ""
+    if include_chat and hit.kind != "faq":
+        chat = html_lib.escape(chat_label(hit, chat_titles), quote=False) + " · "
+    href = html_lib.escape(hit.link(), quote=True)
+    head = f'<a href="{href}">{chat}{when} · {speakers}</a>'
+    body = html_lib.escape(_excerpt_preview(hit.text), quote=False)
+    return f"{head}\n{body}"
+
+
+def _spoiler_overhead(heading: str) -> int:
+    title = html_lib.escape(heading, quote=False)
+    return len(f"<b>{title}</b>\n<tg-spoiler></tg-spoiler>")
+
+
+def _spoiler_message(blocks: list[str], heading: str) -> str:
+    title = html_lib.escape(heading, quote=False)
+    body = "\n\n".join(blocks)
+    return f"<b>{title}</b>\n<tg-spoiler>{body}</tg-spoiler>"
+
+
+def _fits(group: list[str], block: str, overhead: int, budget: int) -> bool:
+    body = sum(len(part) for part in group) + max(0, len(group) - 1) * 2
+    extra = len(block) + (2 if group else 0)
+    return overhead + body + extra <= budget
+
+
+def _trim_block(block: str, overhead: int, limit: int) -> str:
+    if overhead + len(block) <= limit:
+        return block
+    head, sep, body = block.partition("\n")
+    if not sep:
+        return head[: max(1, limit - overhead)]
+    room = limit - overhead - len(head) - 1
+    if room < 1:
+        return head[: max(1, limit - overhead)]
+    return f"{head}\n{body[:room]}"
+
+
+def format_spare_spoilers(
+    hits: list[retrieve.Hit],
+    heading: str,
+    *,
+    chat_titles: dict[int, str] | None = None,
+    include_chat: bool = False,
+    first_room: int = _SPARE_MESSAGE_LIMIT,
+    limit: int = _SPARE_MESSAGE_LIMIT,
+) -> list[str]:
+    """Telegram HTML chunks. Each chunk's excerpts sit inside one spoiler.
+
+    `first_room` is the space left under the answer. A chunk that cannot fit
+    there becomes its own message, sized to `limit`.
+    """
+    if not hits:
+        return []
+    blocks = [
+        _spare_block(hit, chat_titles=chat_titles, include_chat=include_chat)
+        for hit in hits
+    ]
+    overhead = _spoiler_overhead(heading)
+    limit = max(limit, overhead + 1)
+    groups: list[list[str]] = []
+    group: list[str] = []
+    budget = max(0, first_room)
+
+    def flush() -> None:
+        nonlocal budget
+        if group:
+            groups.append(list(group))
+            group.clear()
+        budget = limit
+
+    for block in blocks:
+        block = _trim_block(block, overhead, limit)
+        if not group and overhead + len(block) > budget:
+            budget = limit
+        if group and not _fits(group, block, overhead, budget):
+            flush()
+            if overhead + len(block) > budget:
+                budget = limit
+        group.append(block)
+    flush()
+    return [_spoiler_message(parts, heading) for parts in groups]
+
+
+def merge_spare_html(
+    body: str, parts: list[str], limit: int = _ANSWER_HTML_LIMIT
+) -> tuple[str, list[str]]:
+    """Put the first spoiler under `body` when the pair fits in one message."""
+    if not parts:
+        return body, []
+    combined = f"{body}\n\n{parts[0]}"
+    if len(combined) <= limit:
+        return combined, parts[1:]
+    return body, parts
+
+
+def append_spare_spoilers(
+    body: str,
+    hits: list[retrieve.Hit],
+    heading: str,
+    *,
+    chat_titles: dict[int, str] | None = None,
+    include_chat: bool = False,
+) -> tuple[str, list[str]]:
+    """Answer HTML, plus any spoiler messages that did not fit under it."""
+    if not hits:
+        return body, []
+    parts = format_spare_spoilers(
+        hits,
+        heading,
+        chat_titles=chat_titles,
+        include_chat=include_chat,
+        first_room=_ANSWER_HTML_LIMIT - len(body) - 2,
+    )
+    return merge_spare_html(body, parts)
+
+
 def chat_label(hit: retrieve.Hit, chat_titles: dict[int, str] | None = None) -> str:
     """Display name for a hit's source chat."""
     if chat_titles and hit.chat_id in chat_titles:

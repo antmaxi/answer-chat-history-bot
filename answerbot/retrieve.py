@@ -497,6 +497,49 @@ def _hit_from_thread(
     )
 
 
+def _rrf(rankings: list[tuple[list[int], float]]) -> list[tuple[int, float]]:
+    fused: dict[int, float] = {}
+    for ranking, weight in rankings:
+        for rank, message_id in enumerate(ranking):
+            fused[message_id] = fused.get(message_id, 0.0) + weight / (
+                config.RRF_K + rank + 1
+            )
+    return sorted(fused.items(), key=lambda kv: -kv[1])
+
+
+def _apply_recency(
+    hits: list[Hit], now: datetime, time_range: TimeRange | None
+) -> None:
+    if not hits or config.RECENCY_HALF_LIFE_DAYS <= 0 or time_range is not None:
+        return
+    now_ts = int(now.timestamp())
+    half = config.RECENCY_HALF_LIFE_DAYS
+    for hit in hits:
+        hit.score *= recency_weight(hit.ts_end, now_ts, half)
+    hits.sort(key=lambda h: -h.score)
+
+
+def _faq_spare(
+    conn: sqlite3.Connection,
+    question: str,
+    production: list[Hit],
+    query_vec: np.ndarray | None,
+    time_range: TimeRange | None,
+    speaker: str | None,
+    room: int,
+) -> list[Hit]:
+    """FAQ chunks past FAQ_TOP_K. Empty when FAQ is not part of this question."""
+    if room <= 0 or time_range is not None or speaker or not config.FAQ_ENABLED:
+        return []
+    from . import faq
+
+    found = faq.search(
+        conn, question, query_vec=query_vec, top_k=config.FAQ_TOP_K + room
+    )
+    used = {h.log_id() for h in production if h.kind == "faq"}
+    return [h for h in found if h.log_id() not in used][:room]
+
+
 def search(
     conn: sqlite3.Connection,
     question: str,
@@ -507,9 +550,38 @@ def search(
     speaker: str | None = None,
     query_vec: np.ndarray | None = None,
 ) -> list[Hit]:
+    """Excerpts the model sees. Same list as `search_with_extra` without the spare tail."""
+    hits, _spare = search_with_extra(
+        conn,
+        question,
+        chat_id,
+        top_k,
+        now,
+        time_range,
+        speaker,
+        query_vec,
+    )
+    return hits
+
+
+def search_with_extra(
+    conn: sqlite3.Connection,
+    question: str,
+    chat_id: ChatId = None,
+    top_k: int | None = None,
+    now: datetime | None = None,
+    time_range: TimeRange | None = None,
+    speaker: str | None = None,
+    query_vec: np.ndarray | None = None,
+    extra_k: int = 0,
+) -> tuple[list[Hit], list[Hit]]:
+    """Production excerpts, plus up to `extra_k` ranked hits the model does not see.
+
+    An explicit `top_k` skips the cosine cap and returns no spare hits.
+    """
     chats = normalize_chat_ids(chat_id)
     if chats is not None and not chats:
-        return []
+        return [], []
     allowed = None if chats is None else set(chats)
 
     now = now or datetime.now(timezone.utc)
@@ -520,37 +592,59 @@ def search(
 
     explicit_k = top_k is not None
     top_k = top_k or config.TOP_K
-    pool = top_k * 4
-    if time_range or speaker:
-        pool = top_k * 8
+    extra_k = 0 if explicit_k else max(0, extra_k)
+    span = 8 if time_range or speaker else 4
+    prod_pool = top_k * span
+    # Production fusion stays on prod_pool, so the answer matches a normal ask.
+    # A wider pool only fills spoilers once that pool cannot hold them.
+    wide_pool = prod_pool
+    if extra_k and prod_pool < top_k + extra_k:
+        wide_pool = (top_k + extra_k) * span
 
     vec_ids, vec_scores = _vector_scores(
         conn, question, chat_id, time_range, query_vec=query_vec
     )
     query_cosine = {mid: float(s) for mid, s in zip(vec_ids, vec_scores)}
     if vec_ids:
-        vec_ranking = [vec_ids[i] for i in np.argsort(-vec_scores)[:pool]]
+        order = np.argsort(-vec_scores)
+        vec_full = [vec_ids[i] for i in order[:wide_pool]]
     else:
-        vec_ranking = []
+        vec_full = []
+    kw_full = keyword_search(conn, question, chat_id, wide_pool, time_range)
 
     # Vector search carries more weight: most questions are paraphrases of what
     # was actually said. Keyword search earns its place on names, numbers and
     # exact strings like passwords, where embeddings are weak.
-    rankings = [
-        (keyword_search(conn, question, chat_id, pool, time_range), config.WEIGHT_KEYWORD),
-        (vec_ranking, config.WEIGHT_VECTOR),
-    ]
+    prod_ranked = _rrf(
+        [
+            (kw_full[:prod_pool], config.WEIGHT_KEYWORD),
+            (vec_full[:prod_pool], config.WEIGHT_VECTOR),
+        ]
+    )[:prod_pool]
+    prod_seed_ids = {mid for mid, _ in prod_ranked}
+    ranked = list(prod_ranked)
+    if extra_k and wide_pool > prod_pool:
+        seen = set(prod_seed_ids)
+        for mid, score in _rrf(
+            [
+                (kw_full, config.WEIGHT_KEYWORD),
+                (vec_full, config.WEIGHT_VECTOR),
+            ]
+        )[:wide_pool]:
+            if mid not in seen:
+                ranked.append((mid, score))
+                seen.add(mid)
 
-    fused: dict[int, float] = {}
-    for ranking, weight in rankings:
-        for rank, message_id in enumerate(ranking):
-            fused[message_id] = fused.get(message_id, 0.0) + weight / (
-                config.RRF_K + rank + 1
-            )
-
-    ranked = sorted(fused.items(), key=lambda kv: -kv[1])[:pool]
     if not ranked:
-        return _with_faq(conn, question, [], query_vec, time_range, speaker)
+        production = _with_faq(conn, question, [], query_vec, time_range, speaker)
+        spare = (
+            _faq_spare(
+                conn, question, production, query_vec, time_range, speaker, extra_k
+            )
+            if extra_k
+            else []
+        )
+        return production, spare
 
     placeholders = ",".join("?" * len(ranked))
     seeds = {
@@ -614,7 +708,8 @@ def search(
     )
     kept_msg_ids = set(kept_seeds)
 
-    hits = []
+    prod_hits: list[Hit] = []
+    wide_hits: list[Hit] = []
     for message_id, score in ranked:
         if message_id not in expanded:
             continue
@@ -622,7 +717,8 @@ def search(
         if seed["msg_id"] not in kept_msg_ids:
             continue
         members = expanded[message_id]
-        hits.append(
+        bucket = prod_hits if message_id in prod_seed_ids else wide_hits
+        bucket.append(
             _hit_from_thread(
                 conn,
                 seed,
@@ -634,15 +730,25 @@ def search(
             )
         )
 
-    if hits and config.RECENCY_HALF_LIFE_DAYS > 0 and time_range is None:
-        now_ts = int(now.timestamp())
-        for hit in hits:
-            hit.score *= recency_weight(
-                hit.ts_end, now_ts, config.RECENCY_HALF_LIFE_DAYS
-            )
-        hits.sort(key=lambda h: -h.score)
+    _apply_recency(prod_hits, now, time_range)
+    _apply_recency(wide_hits, now, time_range)
 
-    hits = hits[:top_k]
+    kept = prod_hits[:top_k]
     if not explicit_k:
-        hits = cap_hits(hits)
-    return _with_faq(conn, question, hits, query_vec, time_range, speaker)
+        kept = cap_hits(kept)
+    production = _with_faq(conn, question, kept, query_vec, time_range, speaker)
+    if not extra_k:
+        return production, []
+    spare = (prod_hits[len(kept):] + wide_hits)[:extra_k]
+    spare.extend(
+        _faq_spare(
+            conn,
+            question,
+            production,
+            query_vec,
+            time_range,
+            speaker,
+            extra_k - len(spare),
+        )
+    )
+    return production, spare

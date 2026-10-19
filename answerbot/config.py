@@ -254,6 +254,10 @@ FAQ_COSINE_MIN = float(os.getenv("FAQ_COSINE_MIN", "0.65"))
 ADMIN_USER_IDS = {
     int(x) for x in os.getenv("ADMIN_USER_IDS", "").replace(",", " ").split() if x.strip()
 }
+# When an admin asks, this many ranked excerpts past the production cap
+# (MIN_K..MAX_K, plus FAQ) are shown under a spoiler. The model still sees
+# only the production set. 0 hides the spoiler.
+ADMIN_EXTRA_K = int(os.getenv("ADMIN_EXTRA_K", "30"))
 # How many new messages may accumulate before the tail is re-windowed.
 LIVE_REINDEX_EVERY = int(os.getenv("LIVE_REINDEX_EVERY", "20"))
 

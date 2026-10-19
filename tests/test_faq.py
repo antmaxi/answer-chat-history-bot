@@ -147,6 +147,17 @@ class TestRetrieveMerge:
         assert hits
         assert hits[0].kind == "faq"
 
+    def test_spare_faq_chunks_are_not_the_ones_sent(self, conn, fake_embed, faq_on, monkeypatch):
+        monkeypatch.setattr(config, "FAQ_TOP_K", 1)
+        _index(conn)
+        prod = retrieve.search(conn, "мусор", chat_id=1)
+        hits, extra = retrieve.search_with_extra(conn, "мусор", chat_id=1, extra_k=5)
+        assert [h.log_id() for h in hits] == [h.log_id() for h in prod]
+        assert hits and hits[0].kind == "faq"
+        assert extra
+        assert all(h.kind == "faq" for h in extra)
+        assert {h.log_id() for h in hits}.isdisjoint({h.log_id() for h in extra})
+
     def test_time_range_skips_faq(self, conn, fake_embed, faq_on):
         ts = 1_700_000_000
         conn.execute(

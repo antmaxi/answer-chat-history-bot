@@ -681,9 +681,21 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         # stuck behind SentenceTransformer.
         query_vec = await _embed(embed.encode_query, search_q)
         search_t0 = time.monotonic()
-        hits = await _db(
-            retrieve.search, conn, search_q, chat_id, query_vec=query_vec
-        )
+        extra_k = config.ADMIN_EXTRA_K if user_id in config.ADMIN_USER_IDS else 0
+        if extra_k > 0:
+            hits, spare = await _db(
+                retrieve.search_with_extra,
+                conn,
+                search_q,
+                chat_id,
+                query_vec=query_vec,
+                extra_k=extra_k,
+            )
+        else:
+            hits = await _db(
+                retrieve.search, conn, search_q, chat_id, query_vec=query_vec
+            )
+            spare = []
         search_ms = int((time.monotonic() - search_t0) * 1000)
         if hits:
             blocked = _quota_block(user_id, lang)
@@ -718,11 +730,31 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         _history[key].append(question)
         await _stop_thinking(stop, spinner)
         spinner = None
+        body = format_answer(
+            result, lang, chat_titles=titles, include_chat=include_chat
+        )
+        followups: list[str] = []
+        if spare:
+            body, followups = answer.append_spare_spoilers(
+                body,
+                spare,
+                i18n.t(lang, "extra_excerpts", n=len(spare)),
+                chat_titles=titles,
+                include_chat=include_chat,
+            )
         await thinking.edit_text(
-            format_answer(result, lang, chat_titles=titles, include_chat=include_chat),
+            body,
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+        for part in followups:
+            try:
+                await thinking.reply(
+                    part, parse_mode="HTML", disable_web_page_preview=True
+                )
+            except Exception:
+                log.exception("failed to send spare excerpts")
+                break
     except asyncio.CancelledError:
         log.info("search cancelled user=%s chat=%s", user_id, message.chat.id)
         await _abandon_search(thinking, stop, spinner, lang)
