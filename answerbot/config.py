@@ -251,6 +251,12 @@ FAQ_SITE = parse_faq_site(os.getenv("FAQ_SITE"))
 FAQ_TOP_K = int(os.getenv("FAQ_TOP_K", "3"))
 FAQ_COSINE_MIN = float(os.getenv("FAQ_COSINE_MIN", "0.65"))
 
+# Similar people from #ichbin intros. Not used by question answering.
+# Cosine is a dot product of L2-normalized profile vectors. 0 disables the floor.
+ICHBIN_TOP_K = int(os.getenv("ICHBIN_TOP_K", "5"))
+ICHBIN_COSINE_MIN = float(os.getenv("ICHBIN_COSINE_MIN", "0.5"))
+ICHBIN_MAX_CHARS = int(os.getenv("ICHBIN_MAX_CHARS", "1500"))
+
 ADMIN_USER_IDS = {
     int(x) for x in os.getenv("ADMIN_USER_IDS", "").replace(",", " ").split() if x.strip()
 }

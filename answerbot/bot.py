@@ -44,7 +44,7 @@ from aiogram.types import (
     Message,
 )
 
-from . import adminlog, answer, chat_scope, config, cooldown, db, embed, faq, followup, i18n, index, logconfig, membership, people, retrieve
+from . import adminlog, answer, chat_scope, config, cooldown, db, embed, faq, followup, i18n, ichbin, index, logconfig, membership, people, retrieve
 from .info import (
     format_info,
     format_latency,
@@ -77,9 +77,11 @@ _members = membership.MembershipCache(config.MEMBERSHIP_CACHE_SECONDS)
 _history: dict[tuple[int, int], deque[str]] = defaultdict(lambda: deque(maxlen=4))
 _admin_errors = adminlog.AdminErrorHandler()
 _lang_cache: dict[int, str] = {}
-# (chat_id, user_id) -> monotonic time /ask was issued with no question yet.
+# (chat_id, user_id) -> monotonic time /ask or /similar_people was issued with no follow-up yet.
 _pending_ask: dict[tuple[int, int], float] = {}
+_pending_similar: dict[tuple[int, int], float] = {}
 _ASK_PENDING_SECONDS = 5 * 60
+_ichbin_lock = asyncio.Lock()
 # In-flight retrieve+answer tasks, cancelled by /cancel.
 _in_flight: dict[tuple[int, int], set[asyncio.Task]] = defaultdict(set)
 _chat_title = ""
@@ -257,12 +259,34 @@ def _cancel_pending_ask(message: Message) -> None:
     key = _ask_key(message)
     if key is not None:
         _pending_ask.pop(key, None)
+        _pending_similar.pop(key, None)
 
 
 def _arm_pending_ask(message: Message) -> None:
     key = _ask_key(message)
     if key is not None:
+        _pending_similar.pop(key, None)
         _pending_ask[key] = time.monotonic()
+
+
+def _arm_pending_similar(message: Message) -> None:
+    key = _ask_key(message)
+    if key is not None:
+        _pending_ask.pop(key, None)
+        _pending_similar[key] = time.monotonic()
+
+
+def _pending_similar_ready(message: Message) -> bool:
+    key = _ask_key(message)
+    if key is None:
+        return False
+    started = _pending_similar.get(key)
+    if started is None:
+        return False
+    if time.monotonic() - started > _ASK_PENDING_SECONDS:
+        _pending_similar.pop(key, None)
+        return False
+    return True
 
 
 def _pending_ask_ready(message: Message) -> bool:
@@ -876,11 +900,119 @@ async def cmd_cancel(message: Message, bot: Bot) -> None:
     n = 0
     if key is not None:
         had_pending = _pending_ask.pop(key, None) is not None
+        had_pending = _pending_similar.pop(key, None) is not None or had_pending
         n = _cancel_in_flight(key)
     if n or had_pending:
         await message.reply(i18n.t(lang, "search_cancelled"))
     else:
         await message.reply(i18n.t(lang, "nothing_to_cancel"))
+
+
+async def _sync_ichbin(sender_id: int | None = None) -> None:
+    """Refresh #ichbin profiles. Encode stays off the SQLite lock."""
+    async with _ichbin_lock:
+        try:
+            jobs, delete_ids = await _db(ichbin.plan_sync, conn, sender_id=sender_id)
+            embed_jobs = [job for job in jobs if job.embed]
+            vecs = None
+            if embed_jobs:
+                vecs = await _embed(embed.encode_passages, [job.text for job in embed_jobs])
+            stats = await _db(ichbin.apply_sync, conn, jobs, vecs, delete_ids)
+        except Exception:
+            log.exception("ichbin sync failed")
+            return
+    if stats["written"] or stats["deleted"]:
+        log.info(
+            "ichbin profiles written=%s embedded=%s removed=%s",
+            stats["written"],
+            stats["embedded"],
+            stats["deleted"],
+        )
+
+
+async def _send_similar(message: Message, sender_id: int) -> None:
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
+    try:
+        rec = await _db(ichbin.recommend, conn, sender_id)
+    except Exception:
+        log.exception("similar lookup failed")
+        await message.reply(i18n.t(lang, "similar_failed"))
+        return
+    if rec is None:
+        name = await _db(ichbin.display_name, conn, sender_id)
+        await message.reply(
+            i18n.t(lang, "similar_no_intro", name=html.quote(name)),
+            parse_mode="HTML",
+        )
+        return
+    text = ichbin.format_similar(lang, rec)
+    for part in telegram_chunks(text):
+        await message.reply(part, parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def _reply_similar_query(message: Message, raw: str) -> None:
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
+    kind, sender_id, handle = await _db(ichbin.resolve_username, conn, raw)
+    if kind == "unknown":
+        await message.reply(
+            i18n.t(lang, "similar_unknown", username=html.quote(handle or "")),
+            parse_mode="HTML",
+        )
+        return
+    if kind != "ok" or sender_id is None:
+        await message.reply(i18n.t(lang, "similar_usage"))
+        return
+    await _send_similar(message, sender_id)
+
+
+async def _consume_pending_similar(message: Message) -> bool:
+    """If /similar_people is waiting, the next message is an @username or a forward."""
+    if not _pending_similar_ready(message):
+        return False
+    key = _ask_key(message)
+    if key is not None:
+        _pending_similar.pop(key, None)
+    lang = await _lang_for(message.from_user.id if message.from_user else None)
+    kind, sender_id = ichbin.forward_sender(message.forward_origin)
+    if kind == "user" and sender_id is not None:
+        user = getattr(message.forward_origin, "sender_user", None)
+        name = people.name_from_user(user)
+        if name:
+            await _db(
+                _record_person,
+                sender_id,
+                name,
+                getattr(user, "username", None),
+                "live",
+            )
+        await _send_similar(message, sender_id)
+        return True
+    if kind == "hidden":
+        await message.reply(i18n.t(lang, "similar_hidden"))
+        return True
+    if kind == "other":
+        await message.reply(i18n.t(lang, "similar_not_person"))
+        return True
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.reply(i18n.t(lang, "similar_usage"))
+        return True
+    await _reply_similar_query(message, text)
+    return True
+
+
+@dp.message(Command("similar_people"))
+async def cmd_similar(message: Message, command, bot: Bot) -> None:
+    if not await _ensure_member(message, bot):
+        return
+    _cancel_pending_ask(message)
+    arg = (command.args or "").strip()
+    if not arg:
+        _arm_pending_similar(message)
+        lang = await _lang_for(message.from_user.id if message.from_user else None)
+        await message.reply(i18n.t(lang, "similar_prompt"))
+        return
+    await _reply_similar_query(message, arg)
 
 
 @dp.message(Command("stats"))
@@ -1249,6 +1381,11 @@ async def _ingest_group_message(message: Message, *, edited: bool = False) -> No
     if message.from_user:
         u = message.from_user
         await _db(_record_person, u.id, people.name_from_user(u), u.username)
+    sender_id = message.from_user.id if message.from_user else None
+    if sender_id is not None and ichbin.corpus_includes(message.chat.id):
+        tagged = ichbin.has_tag(text)
+        if tagged or (edited and await _db(ichbin.has_profile, conn, sender_id)):
+            asyncio.create_task(_sync_ichbin(sender_id))
     if edited:
         asyncio.create_task(_background_index(message.chat.id, force=True))
     else:
@@ -1268,6 +1405,9 @@ async def on_group_message(message: Message, bot: Bot) -> None:
     await _ingest_group_message(message)
 
     if not _is_main_chat(message.chat.id):
+        return
+
+    if await _consume_pending_similar(message):
         return
 
     if await _consume_pending_ask(message):
@@ -1299,6 +1439,11 @@ async def on_group_edit(message: Message) -> None:
 
 @dp.message(F.chat.type == ChatType.PRIVATE)
 async def on_private_message(message: Message, bot: Bot) -> None:
+    if _pending_similar_ready(message):
+        if not await _ensure_member(message, bot):
+            return
+        if await _consume_pending_similar(message):
+            return
     if not message.text:
         return
     if not await _ensure_member(message, bot):
@@ -1363,6 +1508,7 @@ async def _on_startup(bot: Bot) -> None:
         log.info("embedding model ready")
     except Exception:
         log.exception("embedding warmup failed; the first search will load the model")
+    asyncio.create_task(_sync_ichbin())
     s = db.stats(conn)
     _seed_typical_ask(s)
     log.info("bot is up; database %s: %s", config.DB_PATH, s)

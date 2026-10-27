@@ -183,6 +183,6 @@ class TestCommandSpecs:
             assert "info" in cmds
             assert "help" in cmds
             visible = [c for c in cmds if c not in i18n.ADMIN_COMMANDS]
-            assert visible == ["ask", "cancel", "settings", "info", "help"]
+            assert visible == ["ask", "cancel", "similar_people", "settings", "info", "help"]
             assert "stats" in i18n.ADMIN_COMMANDS
             assert "who" in i18n.ADMIN_COMMANDS

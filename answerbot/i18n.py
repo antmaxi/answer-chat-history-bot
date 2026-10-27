@@ -16,6 +16,7 @@ COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
     "ru": [
         ("ask", "Задать вопрос"),
         ("cancel", "Отменить поиск"),
+        ("similar_people", "Похожие люди по #ichbin"),
         ("settings", "⚙️ Настройки"),
         ("stats", "Индекс и вопросы"),
         ("reindex", "Обновить индекс"),
@@ -27,6 +28,7 @@ COMMAND_SPECS: dict[str, list[tuple[str, str]]] = {
     "en": [
         ("ask", "Ask a question"),
         ("cancel", "Stop the current search"),
+        ("similar_people", "Similar people by #ichbin"),
         ("settings", "⚙️ Settings"),
         ("stats", "Index and questions"),
         ("reindex", "Rebuild recent index"),
@@ -44,7 +46,7 @@ T: dict[str, dict[str, str]] = {
             "I answer questions from the chat history I index and from the community FAQ.\n"
             "In the main group, @mention me (or reply to a question with @mention), "
             "reply to my messages, or /ask. In DM, just ask.\n"
-            "Commands: /ask, /ask <question>, /cancel, /settings, /info"
+            "Commands: /ask, /ask <question>, /cancel, /similar_people, /settings, /info"
         ),
         "help_admin": (
             "\nAdmins: /stats, /stats <a> <b> (terms in a–b% of messages), "
@@ -183,7 +185,9 @@ T: dict[str, dict[str, str]] = {
             "• reply to someone with a bare @mention (their text is the question)\n"
             "• reply with @mention plus extra words\n"
             "• reply to my answers (no mention needed)\n"
-            "• /ask with a question, or /ask then the next message\n\n"
+            "• /ask with a question, or /ask then the next message\n"
+            "• /similar_people @username, or /similar_people then forward a message — "
+            "people with a similar #ichbin intro\n\n"
             "<b>In a DM</b> (group members only)\n"
             "• just type a question\n"
             "• /ask works the same way\n"
@@ -199,6 +203,18 @@ T: dict[str, dict[str, str]] = {
             "and the chat excerpts used to answer it are not stored after the "
             "request and are not used to train models."
         ),
+        "similar_prompt": "Send an @username, or forward a message from that person.",
+        "similar_usage": (
+            "Usage: /similar_people @username — or /similar_people, then an @username "
+            "or a forwarded message."
+        ),
+        "similar_unknown": "I don't know @{username} yet.",
+        "similar_no_intro": "No #ichbin intro for {name}, so there is nothing to compare.",
+        "similar_hidden": "That forward hides the account. Send their @username instead.",
+        "similar_not_person": "That forward is not from a person.",
+        "similar_heading": "Similar",
+        "similar_none": "No one else is close enough.",
+        "similar_failed": "Could not look up similar people.",
         "unknown": "unknown",
     },
     "ru": {
@@ -207,7 +223,7 @@ T: dict[str, dict[str, str]] = {
             "Я отвечаю на вопросы по проиндексированной истории чатов и по FAQ сообщества.\n"
             "В основной группе упомяните меня (или ответьте на вопрос с упоминанием), "
             "ответьте на моё сообщение или /ask. В личке просто спросите.\n"
-            "Команды: /ask, /ask <вопрос>, /cancel, /settings, /info"
+            "Команды: /ask, /ask <вопрос>, /cancel, /similar_people, /settings, /info"
         ),
         "help_admin": (
             "\nАдминам: /stats, /stats <a> <b> (слова в a–b% сообщений), "
@@ -346,7 +362,9 @@ T: dict[str, dict[str, str]] = {
             "• ответьте на чужое сообщение голым упоминанием (этот текст станет вопросом)\n"
             "• ответьте упоминанием и своими словами\n"
             "• ответьте на мой ответ (упоминание не нужно)\n"
-            "• /ask с вопросом или /ask, а вопрос — следующим сообщением\n\n"
+            "• /ask с вопросом или /ask, а вопрос — следующим сообщением\n"
+            "• /similar_people @username или /similar_people и пересланное сообщение — "
+            "люди с похожим #ichbin\n\n"
             "<b>В личке</b> (только участникам группы)\n"
             "• просто напишите вопрос\n"
             "• /ask работает так же\n"
@@ -362,6 +380,18 @@ T: dict[str, dict[str, str]] = {
             "ваш вопрос и фрагменты чата, по которым строится ответ, не "
             "сохраняются после запроса и не используются для обучения моделей."
         ),
+        "similar_prompt": "Пришлите @username или перешлите сообщение этого человека.",
+        "similar_usage": (
+            "Использование: /similar_people @username — или /similar_people, затем @username "
+            "или пересланное сообщение."
+        ),
+        "similar_unknown": "Я пока не знаю @{username}.",
+        "similar_no_intro": "У {name} нет сообщения с #ichbin, сравнивать не с чем.",
+        "similar_hidden": "В этой пересылке аккаунт скрыт. Пришлите @username.",
+        "similar_not_person": "Эта пересылка не от человека.",
+        "similar_heading": "Похожие",
+        "similar_none": "Больше никого достаточно похожего нет.",
+        "similar_failed": "Не получилось найти похожих людей.",
         "unknown": "неизвестно",
     },
 }

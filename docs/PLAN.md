@@ -39,6 +39,7 @@ Modules:
 - `ingest/live.py` — append / upsert Bot API messages; flush or refresh the tail
 - `index.py` — conversation windows, per-message embed (plan/apply so encode can run off the DB lock)
 - `faq.py` — fetch `ru-ch/faq` markdown, chunk by heading, FTS + embed; hybrid search prepended to chat hits
+- `ichbin.py` — one embedding per person from their `#ichbin` messages; `/similar_people` recommends nearest people by @username or a forwarded message. Not part of answering
 - `retrieve.py` — hybrid BM25 + cosine over messages, query-time thread expansion, optional time/speaker filters; `query_vec` so the bot can encode off the SQLite lock; prepends FAQ hits unless the question has a time range or speaker
 - `thread.py` — replies / @mentions / cosine neighbours around a seed message
 - `timerange.py` / `people.py` / `followup.py` — question parsing helpers
@@ -100,6 +101,20 @@ CREATE TABLE window_vecs (
 CREATE TABLE message_vecs (
   message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
   vec        BLOB NOT NULL
+);
+
+CREATE TABLE ichbin_profiles (      -- #ichbin intro text, one row per person
+  sender_id  INTEGER PRIMARY KEY,
+  text       TEXT NOT NULL,
+  msg_count  INTEGER NOT NULL,
+  chat_id    INTEGER NOT NULL,      -- newest tagged message, for the t.me link
+  msg_id     INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE ichbin_vecs (
+  sender_id INTEGER PRIMARY KEY REFERENCES ichbin_profiles(sender_id) ON DELETE CASCADE,
+  vec       BLOB NOT NULL
 );
 
 CREATE TABLE state (chat_id INTEGER PRIMARY KEY, last_indexed_msg_id INTEGER);
@@ -247,14 +262,17 @@ GitHub Pages links.
   `TELEGRAM_CHAT_ID` (`getChatMember`, TTL-cached). Non-members are declined.
   Search always uses that chat.
 - Commands: `/ask` (prompt, then the next message) or `/ask <question>`;
-  `/cancel` (stop a running search or a pending `/ask`); `/info` (includes
+  `/cancel` (stop a running search or a pending `/ask` or `/similar_people`); `/info` (includes
   index stats), `/settings` (UI language: Russian default, or English);
   admins also `/stats` (index, question counts, ask-time median ± std
   and min/max over the last day / week / month; `/stats a b` lists terms
   in a–b% of messages), `/reindex` (lookback)
   and `/reindex full` (also refreshes the FAQ wiki), `/resolve` (Bot API names, background, resumable;
   `/resolve retry` / `/resolve stop`). Non-admins see only
-  `/ask`, `/cancel`, `/settings`, `/info`, `/help` in the command menu.
+  `/ask`, `/cancel`, `/similar_people`, `/settings`, `/info`, `/help` in the command menu.
+  `/similar_people @username` (or `/similar_people`, then an @username or a forwarded
+  message) replies with that person's `#ichbin` text and the nearest other
+  intros. That index is separate from answering.
 - Several members can ask at once: each ask is its own task. Query encode
   is off the SQLite lock (one SentenceTransformer call at a time); LLM
   generation overlaps. Cooldown is per-user-per-chat, so different people

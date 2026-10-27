@@ -37,7 +37,7 @@ still works.
 
 Stop the bot (`docker compose stop`) before a bulk export or `index --update`
 so two writers don't share the file. Other commands (`search`, `answer`,
-`people`, `index --update`) are the same `docker compose run --rm bot python -m
+`people`, `ichbin`, `index --update`) are the same `docker compose run --rm bot python -m
 answerbot…` form, with paths under `/data`. Ollama on the host:
 `OLLAMA_HOST=http://host.docker.internal:11434`.
 
@@ -182,8 +182,20 @@ size), `/settings` (language: Russian by default, or English), `/cancel`
 a–b% of messages — the same document frequency as `STOPWORD_DF_RATIO`),
 `/reindex` / `/reindex full`, `/resolve` (background name lookup; `retry` /
 `stop`), and `/who <id>` (name from a telegram user id, or `User N`, or
-reply to a message) are available. Non-admins see only `/ask`, `/cancel`,
-`/settings`, `/info`, and `/help` in the command menu.
+reply to a message) are available. `/similar_people @username` recommends people
+with a similar `#ichbin` intro (or `/similar_people`, then an `@username` or a
+forwarded message). The reply starts with that person's `#ichbin` text.
+Non-admins see only `/ask`, `/cancel`, `/similar_people`, `/settings`, `/info`, and
+`/help` in the command menu.
+
+Rebuild the `#ichbin` index from history already in the database (the bot
+also does this on startup, and when a tagged message arrives). With no
+`--chat-id`, every chat in the database is included; the running bot limits
+itself to `TELEGRAM_CHAT_ID`:
+
+```bash
+python -m answerbot.ichbin
+```
 
 ## Switching the answer model
 

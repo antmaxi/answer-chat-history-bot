@@ -185,6 +185,22 @@ CREATE TABLE IF NOT EXISTS faq_state (
   sha        TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- One embedding per person who posted #ichbin. Separate from message_vecs
+-- and from question answering. See ichbin.py.
+CREATE TABLE IF NOT EXISTS ichbin_profiles (
+  sender_id   INTEGER PRIMARY KEY,
+  text        TEXT NOT NULL,
+  msg_count   INTEGER NOT NULL,
+  chat_id     INTEGER NOT NULL,
+  msg_id      INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ichbin_vecs (
+  sender_id INTEGER PRIMARY KEY REFERENCES ichbin_profiles(sender_id) ON DELETE CASCADE,
+  vec       BLOB NOT NULL
+);
 """
 
 
