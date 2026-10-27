@@ -16,3 +16,5 @@ def _default_speaker_label(monkeypatch):
     # FAQ fetch is network; tests that need it turn it on and stub ingest.
     monkeypatch.setattr(config, "FAQ_ENABLED", False)
     monkeypatch.setattr(config, "FAQ_COSINE_MIN", 0.0)
+    # A real cross-encoder would download weights and reorder fixture hits.
+    monkeypatch.setattr(config, "RERANK", False)

@@ -153,23 +153,26 @@ def term_df_band(
     return n, terms, match_count
 
 
-def build_fts_query(question: str, total: int, df) -> str:
-    """FTS5 OR-query of stems, with high-DF terms removed.
+def _fts_term(stem: str) -> str:
+    """Quote one stem so quotes and AND/OR/NOT inside it stay literal."""
+    return '"' + stem.replace('"', '""') + '"'
+
+
+def query_stems(question: str, total: int, df) -> list[str]:
+    """Informative stems for a keyword query, high-DF terms removed.
 
     `df` is document frequency of a stem in whichever index is being searched
     (messages or FAQ). STOPWORD_KEEP is decided on the original token, then
     the stem is what gets matched — the index stores stems too.
 
-    Quoting each stem sidesteps quotes, parentheses, and the words AND/OR/NOT
-    in the question. An unfiltered OR-query would match the whole corpus on
-    particles alone and dilute fusion, so terms that appear in a large
-    fraction of rows are dropped. If that would drop everything, the stems
-    are kept: a noisy keyword arm is better than none.
+    Terms that appear in a large fraction of rows are dropped. If that would
+    drop everything, the stems are kept: a noisy keyword arm is better than
+    none. The all-stopword fallback is not a rare-stem candidate.
     """
     tokens = re.findall(r"\w+", question, flags=re.UNICODE)
     tokens = [t.lower() for t in tokens if len(t) > 1]
     if not tokens:
-        return ""
+        return []
 
     pairs = [(t, stem_token(t)) for t in tokens]
     if total:
@@ -179,20 +182,49 @@ def build_fts_query(question: str, total: int, df) -> str:
             for token, stem in pairs
             if stem and (is_kept_term(token) or df(stem) <= cutoff)
         ]
-        # If every term is common, the question is all stopwords — keep them
-        # rather than returning nothing and losing the keyword arm entirely.
         if not chosen:
             chosen = [stem for _, stem in pairs if stem]
+            fallback = True
+        else:
+            fallback = False
     else:
         chosen = [stem for _, stem in pairs if stem]
+        fallback = False
 
     seen: list[str] = []
     for stem in chosen:
         if stem not in seen:
             seen.append(stem)
+    if fallback:
+        return []
+    return seen
+
+
+def build_fts_query(question: str, total: int, df) -> str:
+    """FTS5 OR-query of stems, with high-DF terms removed.
+
+    Quoting each stem sidesteps quotes, parentheses, and the words AND/OR/NOT
+    in the question. An unfiltered OR-query would match the whole corpus on
+    particles alone and dilute fusion. If filtering would drop everything,
+    the stems are kept.
+    """
+    tokens = re.findall(r"\w+", question, flags=re.UNICODE)
+    tokens = [t.lower() for t in tokens if len(t) > 1]
+    if not tokens:
+        return ""
+    stems = query_stems(question, total, df)
+    if stems:
+        return " OR ".join(_fts_term(stem) for stem in stems)
+    # All-stopword question: query_stems returns [] so the rare-stem union
+    # stays quiet, but the keyword arm still runs on the raw stems.
+    pairs = [(t, stem_token(t)) for t in tokens]
+    seen: list[str] = []
+    for _token, stem in pairs:
+        if stem and stem not in seen:
+            seen.append(stem)
     if not seen:
         return ""
-    return " OR ".join(f'"{stem}"' for stem in seen)
+    return " OR ".join(_fts_term(stem) for stem in seen)
 
 
 def fts_query(conn: sqlite3.Connection, question: str) -> str:
@@ -209,7 +241,17 @@ def keyword_search(
     time_range: TimeRange | None = None,
 ) -> list[int]:
     """Best-matching message row ids (`messages.id`)."""
-    query = fts_query(conn, question)
+    return _keyword_match(conn, fts_query(conn, question), chat_id, limit, time_range)
+
+
+def _keyword_match(
+    conn: sqlite3.Connection,
+    query: str,
+    chat_id: ChatId,
+    limit: int,
+    time_range: TimeRange | None = None,
+) -> list[int]:
+    """BM25 row ids for an already-built FTS MATCH expression."""
     if not query:
         return []
     chats = normalize_chat_ids(chat_id)
@@ -242,6 +284,74 @@ def keyword_search(
     params.append(limit)
 
     return [r[0] for r in conn.execute(sql, params)]
+
+
+def merge_rare_ids(keyword_ids: list[int], rare_ids: list[int], limit: int) -> list[int]:
+    """Reserve the front of the keyword pool for rare-stem hits that missed it.
+
+    Fusion uses rank, and the keyword list is sliced to the pool before RRF.
+    A price or a name can fall outside that slice when common stems fill it.
+    Hits already in the list keep their BM25 order; only the missing ones
+    take slots from the tail.
+    """
+    have = set(keyword_ids)
+    front = [i for i in rare_ids if i not in have]
+    out: list[int] = []
+    seen: set[int] = set()
+    for message_id in front + list(keyword_ids):
+        if message_id in seen:
+            continue
+        seen.add(message_id)
+        out.append(message_id)
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
+def rarest_stem(conn: sqlite3.Connection, stems: list[str]) -> str | None:
+    """The rarest informative stem under the DF cutoff, or None.
+
+    Document frequency of 0 is not rare, it is absent. The cutoff is at least
+    one message so a unique token still qualifies in a small corpus.
+    """
+    ratio = config.RARE_STEM_DF_RATIO
+    if ratio <= 0 or not stems:
+        return None
+    total = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+    if not total:
+        return None
+    cutoff = max(1, int(total * ratio))
+    best: str | None = None
+    best_df: int | None = None
+    for stem in stems:
+        df = _doc_frequency(conn, stem)
+        if df <= 0 or df > cutoff:
+            continue
+        if best_df is None or df < best_df:
+            best = stem
+            best_df = df
+    return best
+
+
+def _with_rare_stem(
+    conn: sqlite3.Connection,
+    question: str,
+    chat_id: ChatId,
+    keyword_ids: list[int],
+    limit: int,
+    time_range: TimeRange | None,
+    reserve: int,
+) -> list[int]:
+    """Union BM25 hits for the rarest query stem into the keyword pool."""
+    total = conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+    stems = query_stems(question, total, lambda token: _doc_frequency(conn, token))
+    stem = rarest_stem(conn, stems)
+    if not stem:
+        return keyword_ids[:limit] if limit else keyword_ids
+    rare_ids = _keyword_match(
+        conn, _fts_term(stem), chat_id, max(reserve, 1), time_range
+    )
+    return merge_rare_ids(keyword_ids, rare_ids, limit)
 
 
 def _vectors(conn: sqlite3.Connection, chat_id: ChatId) -> tuple[list[int], np.ndarray, np.ndarray]:
@@ -507,16 +617,155 @@ def _rrf(rankings: list[tuple[list[int], float]]) -> list[tuple[int, float]]:
     return sorted(fused.items(), key=lambda kv: -kv[1])
 
 
+def wants_recency(question: str) -> bool:
+    """True only for questions that ask what is current.
+
+    A decision cue wins when both match («что решили сейчас» stays historical).
+    Neutral questions get no decay, so an older decision is not buried under
+    a recent tangent.
+    """
+    if _DECISION_Q.search(question):
+        return False
+    return _CURRENT_Q.search(question) is not None
+
+
+_CURRENT_Q = re.compile(
+    r"(?iu)("
+    r"\bсейчас\b|"
+    r"\bактуально\b|"
+    r"сколько(?:\s+\S+){0,3}\s+стоит\b|"
+    r"\bright now\b|"
+    r"\bcurrently\b|"
+    r"\bnow\b|"
+    r"how much (?:does|do|is|are)(?:\s+\S+){0,3}\s+cost\b"
+    r")"
+)
+_DECISION_Q = re.compile(
+    r"(?iu)("
+    r"о\s+ч[её]м\s+договорились|"
+    r"что\s+решили|"
+    r"\bwhat did we (?:decide|agree)\b|"
+    r"\bwhat we (?:decided|agreed)\b|"
+    r"\bdid we (?:decide|agree)\b"
+    r")"
+)
+
+
+def _apply_rerank(question: str, hits: list[Hit]) -> list[Hit]:
+    """Reorder the fused pool by a cross-encoder. Fusion order if it is off.
+
+    Unscored hits past RERANK_MAX keep a score below the worst scored hit so
+    a later recency sort cannot pull them ahead of the reranked block.
+    """
+    if len(hits) < 2 or not config.RERANK:
+        return hits
+    from . import rerank
+
+    n = min(len(hits), max(1, config.RERANK_MAX))
+    head, tail = hits[:n], hits[n:]
+    scores = rerank.score(question, [h.text for h in head])
+    if not scores or len(scores) != len(head):
+        return hits
+    for hit, value in zip(head, scores):
+        hit.score = value
+    head.sort(key=lambda h: -h.score)
+    if tail:
+        floor = min(h.score for h in head) - 1.0
+        for i, hit in enumerate(tail):
+            hit.score = floor - i
+    return head + tail
+
+
 def _apply_recency(
-    hits: list[Hit], now: datetime, time_range: TimeRange | None
+    hits: list[Hit], now: datetime, time_range: TimeRange | None, question: str
 ) -> None:
     if not hits or config.RECENCY_HALF_LIFE_DAYS <= 0 or time_range is not None:
+        return
+    if not wants_recency(question):
         return
     now_ts = int(now.timestamp())
     half = config.RECENCY_HALF_LIFE_DAYS
     for hit in hits:
         hit.score *= recency_weight(hit.ts_end, now_ts, half)
     hits.sort(key=lambda h: -h.score)
+
+
+def _parse_pin(pin: tuple[int, int] | None) -> tuple[int, int] | None:
+    if not pin or len(pin) != 2:
+        return None
+    try:
+        return int(pin[0]), int(pin[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _thread_members(
+    conn: sqlite3.Connection,
+    seed: sqlite3.Row,
+    time_range: TimeRange | None,
+    handles: dict,
+    chat_scope: ChatId,
+) -> list[sqlite3.Row]:
+    candidates = _candidate_msgs(conn, seed, time_range)
+    mentioned = {
+        m["msg_id"]: thread.resolve_mentions(m["text"], handles) for m in candidates
+    }
+    neighbours = thread.expand_thread(
+        candidates,
+        seed["msg_id"],
+        mentioned=mentioned,
+        cosine=_seed_cosines(conn, chat_scope, seed, candidates),
+    )
+    if not neighbours:
+        return [seed]
+    return neighbours
+
+
+def _pinned_hit(
+    conn: sqlite3.Connection,
+    pin: tuple[int, int] | None,
+    allowed: set[int] | None,
+    chat_scope: ChatId,
+    query_cosine: dict[int, float],
+) -> Hit | None:
+    """Expanded thread for a message the asker replied to.
+
+    The time range and speaker filter do not drop it: the user pointed at it.
+    """
+    parsed = _parse_pin(pin)
+    if parsed is None:
+        return None
+    chat, msg = parsed
+    seed = conn.execute(
+        "SELECT * FROM messages WHERE chat_id=? AND msg_id=?",
+        (chat, msg),
+    ).fetchone()
+    if seed is None:
+        return None
+    if allowed is not None and int(seed["chat_id"]) not in allowed:
+        return None
+    names = people.name_map(conn)
+    aliases = people.alias_map(conn)
+    handles = people.mention_map(conn)
+    members = _thread_members(conn, seed, None, handles, chat_scope)
+    return _hit_from_thread(
+        conn,
+        seed,
+        members,
+        1.0,
+        query_cosine.get(int(seed["id"]), 0.0),
+        names,
+        aliases,
+    )
+
+
+def _place_pin(hits: list[Hit], pinned: Hit | None) -> list[Hit]:
+    """Put the pinned thread first and drop fused hits that repeat it."""
+    if pinned is None:
+        return hits
+    ids = set(pinned.msg_ids)
+    rest = [h for h in hits if not ids or not (set(h.msg_ids) & ids)]
+    return [pinned, *rest]
 
 
 def _faq_spare(
@@ -549,6 +798,7 @@ def search(
     time_range: TimeRange | None = None,
     speaker: str | None = None,
     query_vec: np.ndarray | None = None,
+    pin: tuple[int, int] | None = None,
 ) -> list[Hit]:
     """Excerpts the model sees. Same list as `search_with_extra` without the spare tail."""
     hits, _spare = search_with_extra(
@@ -560,6 +810,7 @@ def search(
         time_range,
         speaker,
         query_vec,
+        pin=pin,
     )
     return hits
 
@@ -574,6 +825,7 @@ def search_with_extra(
     speaker: str | None = None,
     query_vec: np.ndarray | None = None,
     extra_k: int = 0,
+    pin: tuple[int, int] | None = None,
 ) -> tuple[list[Hit], list[Hit]]:
     """Production excerpts, plus up to `extra_k` ranked hits the model does not see.
 
@@ -611,6 +863,10 @@ def search_with_extra(
     else:
         vec_full = []
     kw_full = keyword_search(conn, question, chat_id, wide_pool, time_range)
+    kw_full = _with_rare_stem(
+        conn, question, chat_id, kw_full, wide_pool, time_range, top_k
+    )
+    pinned = _pinned_hit(conn, pin, allowed, chat_id, query_cosine)
 
     # Vector search carries more weight: most questions are paraphrases of what
     # was actually said. Keyword search earns its place on names, numbers and
@@ -636,7 +892,12 @@ def search_with_extra(
                 seen.add(mid)
 
     if not ranked:
-        production = _with_faq(conn, question, [], query_vec, time_range, speaker)
+        kept = _place_pin([], pinned)
+        if not explicit_k:
+            kept = cap_hits(kept)
+        else:
+            kept = kept[:top_k]
+        production = _with_faq(conn, question, kept, query_vec, time_range, speaker)
         spare = (
             _faq_spare(
                 conn, question, production, query_vec, time_range, speaker, extra_k
@@ -669,18 +930,7 @@ def search_with_extra(
             continue
         if time_range is not None and not time_range.overlaps(seed["ts"], seed["ts"]):
             continue
-        candidates = _candidate_msgs(conn, seed, time_range)
-        mentioned = {
-            m["msg_id"]: thread.resolve_mentions(m["text"], handles) for m in candidates
-        }
-        neighbours = thread.expand_thread(
-            candidates,
-            seed["msg_id"],
-            mentioned=mentioned,
-            cosine=_seed_cosines(conn, chat_id, seed, candidates),
-        )
-        if not neighbours:
-            neighbours = [seed]
+        neighbours = _thread_members(conn, seed, time_range, handles, chat_id)
         expanded[message_id] = neighbours
         members_by_seed[seed["msg_id"]] = tuple(m["msg_id"] for m in neighbours)
 
@@ -730,8 +980,13 @@ def search_with_extra(
             )
         )
 
-    _apply_recency(prod_hits, now, time_range)
-    _apply_recency(wide_hits, now, time_range)
+    prod_hits = _apply_rerank(question, prod_hits)
+    _apply_recency(prod_hits, now, time_range, question)
+    _apply_recency(wide_hits, now, time_range, question)
+    prod_hits = _place_pin(prod_hits, pinned)
+    if pinned is not None:
+        pin_ids = set(pinned.msg_ids)
+        wide_hits = [h for h in wide_hits if not pin_ids or not (set(h.msg_ids) & pin_ids)]
 
     kept = prod_hits[:top_k]
     if not explicit_k:

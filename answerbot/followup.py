@@ -1,10 +1,11 @@
 """Turn a follow-up into a standalone search query using recent questions.
 
-No extra LLM call: if the new question is dependent ("how much was it", a reply
-to the bot, or extra words on an @mention-reply to someone else), stitch the
-previous question in front so retrieval still has the nouns. The original
-wording is what the answer model sees. A bare @mention as a reply to someone
-else uses that message as the question.
+No extra LLM call: if the new question is dependent ("how much was it",
+«а сколько это стоило?», a reply to the bot, or extra words on an
+@mention-reply to someone else), stitch the previous question in front so
+retrieval still has the nouns. The original wording is what the answer model
+sees. A bare @mention as a reply to someone else uses that message as the
+question.
 """
 
 from __future__ import annotations
@@ -27,15 +28,30 @@ _FOLLOWUP = re.compile(
 
 _PRONOUN = re.compile(r"(?i)\b(it|that|those|them|this|one)\b")
 
+# Same idea in Russian, and only when the whole question is short. A full
+# question that merely starts with «а сколько» keeps its own nouns.
+_FOLLOWUP_RU = re.compile(
+    r"(?is)^("
+    r"а\s+сколько(\s+\S+){0,4}\??$|"
+    r"сколько\s+это(\s+\S+){0,3}\??$|"
+    r"а\s+(что|как)\s+(насч[её]т|с)(\s+\S+){0,3}\??$|"
+    r"а\s+(это|этот|эта|ещ[её])(\s+\S+){0,3}\??$|"
+    r"и\s+(сколько|кто|что|когда|где|почему|как)(\s+\S+){0,3}\??$"
+    r")"
+)
+_PRONOUN_RU = re.compile(
+    r"(?iu)\b(это|этот|эта|эти|этого|этом|того|нему|ней|них|него|неё)\b"
+)
+
 
 def looks_like_followup(question: str) -> bool:
     q = question.strip()
     if not q:
         return False
-    if _FOLLOWUP.search(q):
+    if _FOLLOWUP.search(q) or _FOLLOWUP_RU.search(q):
         return True
     words = q.split()
-    return len(words) <= 5 and bool(_PRONOUN.search(q))
+    return len(words) <= 5 and bool(_PRONOUN.search(q) or _PRONOUN_RU.search(q))
 
 
 def rewrite(question: str, prior: str | None, *, force: bool = False) -> str:

@@ -77,6 +77,21 @@ class TestTimeRangeParse:
         tr = parse_time_range("anything on 2026-02-14", self.now)
         assert tr is not None and tr.label == "2026-02-14"
 
+    def test_russian_yesterday_and_last_week(self):
+        yesterday = parse_time_range("что было вчера", self.now)
+        assert yesterday is not None and yesterday.label == "вчера"
+        day = datetime(2026, 8, 12, tzinfo=timezone.utc)
+        assert yesterday.start == int(day.timestamp())
+        week = parse_time_range("о чём договорились на прошлой неделе", self.now)
+        assert week is not None
+        assert week.end - week.start == 7 * 86400
+
+    def test_russian_february_uses_this_year(self):
+        tr = parse_time_range("лыжи в феврале", self.now)
+        assert tr is not None and tr.label == "February 2026"
+        feb = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        assert tr.start == int(feb.timestamp())
+
 
 class TestTimeRangeSearch:
     def test_filters_windows_outside_the_month(self, conn, fake_embed):
@@ -157,7 +172,7 @@ class TestQueryLog:
         index.reindex(conn, progress=False)
         run_answer(conn, "pangolin", chat_id=1, llm=FakeLLM())
         row = conn.execute(
-            "SELECT question, window_ids, model, search_ms, llm_ms FROM query_log"
+            "SELECT question, window_ids, model, search_ms, llm_ms, answer, abstain FROM query_log"
         ).fetchone()
         assert row["question"] == "pangolin"
         assert row["model"] == "fake"
@@ -166,6 +181,8 @@ class TestQueryLog:
         assert row["search_ms"] >= 0
         assert row["llm_ms"] is not None
         assert row["llm_ms"] >= 0
+        assert row["answer"]
+        assert row["abstain"] in (0, 1)
 
     def test_answer_omits_llm_ms_when_nothing_retrieved(self, conn, fake_embed):
         from answerbot.answer import answer as run_answer
@@ -176,6 +193,53 @@ class TestQueryLog:
                 raise AssertionError("LLM should not run without hits")
 
         run_answer(conn, "anything", chat_id=1, llm=FakeLLM())
-        row = conn.execute("SELECT search_ms, llm_ms FROM query_log").fetchone()
+        row = conn.execute(
+            "SELECT search_ms, llm_ms, answer, abstain FROM query_log"
+        ).fetchone()
         assert row["search_ms"] is not None
         assert row["llm_ms"] is None
+        assert row["abstain"] == 1
+        assert row["answer"]
+
+    def test_miss_report_lists_abstain_and_empty_citations(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "QUERY_LOG", True)
+        common = dict(chat_ids=[1], latency_ms=1, model="fake", window_ids=[1])
+        db.log_query(
+            conn, question="miss", cited_ids=[], answer="не нашёл", abstain=True, **common
+        )
+        db.log_query(
+            conn, question="found", cited_ids=[3], answer="200 lari", abstain=False, **common
+        )
+        db.log_query(
+            conn, question="no tag", cited_ids=[], answer="maybe", abstain=False, **common
+        )
+        rows = db.retrieval_misses(conn)
+        questions = [r["question"] for r in rows]
+        assert questions == ["no tag", "miss"]
+        report = ev.format_miss_report(rows)
+        assert "miss" in report and "no tag" in report
+        assert "found" not in report
+        assert "abstain=1" in report
+
+    def test_migrate_adds_answer_and_abstain(self, conn):
+        conn.execute("DROP TABLE query_log")
+        conn.execute(
+            """CREATE TABLE query_log (
+              id INTEGER PRIMARY KEY,
+              ts INTEGER NOT NULL,
+              question TEXT NOT NULL,
+              chat_ids TEXT,
+              window_ids TEXT NOT NULL,
+              cited_ids TEXT NOT NULL,
+              latency_ms INTEGER,
+              search_ms INTEGER,
+              llm_ms INTEGER,
+              model TEXT,
+              user_id INTEGER
+            )"""
+        )
+        conn.commit()
+        db.migrate(conn)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(query_log)")}
+        assert "answer" in cols
+        assert "abstain" in cols

@@ -151,7 +151,10 @@ CREATE TABLE query_log (
   window_ids  TEXT NOT NULL,         -- FAQ chunk ids stored negative
   cited_ids   TEXT NOT NULL,
   latency_ms  INTEGER,
-  model       TEXT
+  model       TEXT,
+  user_id     INTEGER,
+  answer      TEXT,                 -- reply text, including a not-found line
+  abstain     INTEGER NOT NULL DEFAULT 0  -- grounding or empty retrieval
 );
 
 CREATE TABLE faq_pages (             -- ru-ch/faq markdown articles
@@ -200,12 +203,14 @@ Hybrid, merged with Reciprocal Rank Fusion (`score = Σ weight/(RRF_K + rank)`):
    same sender within `THREAD_SAME_SPEAKER_SECONDS`, and for a short non-reply
    the previous message), still keyed to that message.
 
-Fusion ranks messages. Unless the question already has a time range,
-fused scores are multiplied by a recency decay (`0.5^(age / RECENCY_HALF_LIFE_DAYS)`
-on the message timestamp) so newer excerpts outrank equally relevant older ones.
+Fusion ranks messages. Recency decay
+(`0.5^(age / RECENCY_HALF_LIFE_DAYS)` on the message timestamp) runs only when
+the question looks current («сейчас», «актуально», «сколько стоит», “now”).
+Decision questions («что решили», «о чём договорились») skip it, and a
+decision cue wins if both match. A named time range skips it too.
 Each ranked message is expanded into a thread (`thread.expand_thread`); near-
 duplicate threads are merged. Then `cap_hits` keeps `MIN_K`–`MAX_K` excerpts
-(defaults match `TOP_K`, so the model sees 10): always the first `MIN_K`, then
+(defaults 4 and 8; `TOP_K` is still 10): always the first `MIN_K`, then
 stop when cosine falls below `COSINE_MIN`. The bot does not re-window on each
 question; live ingest batches (`LIVE_REINDEX_EVERY`) and the periodic lookback do.
 
@@ -215,13 +220,30 @@ chat list. Time-range and speaker questions skip the FAQ. `/reindex` and the
 periodic lookback refresh the wiki when the GitHub SHA moved.
 
 An empty chat allow-list is *no chats*, never “all chats”. Time phrases
-(“last week”, “yesterday”, “in February”, ISO dates) filter messages by `ts`.
-“What did Anna say” over-fetches then keeps threads whose `speakers` contain
-that name.
+(“last week”, “yesterday”, “in February”, «вчера», «на прошлой неделе»,
+«в феврале», ISO dates) filter messages by `ts`.
+“What did Anna say” / «что Нино говорила» over-fetches then keeps threads
+whose `speakers` contain that name.
 
-Short follow-ups (“how much was it”, a reply to the bot) stitch the previous
-question into the *search* string. The answer model still sees the original
-wording.
+Short follow-ups (“how much was it”, «а сколько это стоило?», a reply to the
+bot) stitch the previous question into the *search* string. The answer model
+still sees the original wording. A reply to someone else's message also pins
+that message's expanded thread ahead of the fused hits. A reply to the bot
+does not pin the bot's previous answer.
+
+If the rarest informative query stem is under `RARE_STEM_DF_RATIO`, BM25 hits
+for that stem alone are unioned into the keyword pool before fusion. The
+terms are not AND-ed: a price and its noun often sit in different messages.
+
+`python -m answerbot.eval --misses` lists `query_log` rows where `abstain`
+is set or `cited_ids` is empty. Use it to see whether a miss was never
+retrieved. The cross-encoder only reorders the fused pool.
+
+After fusion, `RERANK` scores the question against each expanded thread
+(`RERANK_MODEL`, default `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) and
+reorders that pool before the excerpt cap. It is one CPU pass per question
+and does not touch stored vectors. `RERANK=0` keeps fusion order. A stronger
+embed model still needs a full reindex; this reranker does not.
 
 ## Answering
 
@@ -321,7 +343,7 @@ rotating `answerbot.log` next to the DB. `Dockerfile` /
 - Text only. Images, voice notes, and documents are indexed by caption or skipped.
 - Retrieved windows go to the LLM as-is (wifi passwords and similar will be repeated if asked).
 - `SPEAKER_LABEL=id` anonymizes speaker labels only; names people typed in message text stay.
-- No rerank pass. Add one only if eval recall drops.
+- The cross-encoder reorders the fused pool only. A message that never entered that pool stays missing. A stronger embed model still needs a full reindex.
 - Message vectors from before the passage recipe stay one line until a full
   `index` or `/reindex full`. The bot logs a warning while that marker is missing.
   Keyword stemming does not need a re-embed; opening the database rebuilds FTS once.

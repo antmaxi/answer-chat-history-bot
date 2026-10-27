@@ -24,6 +24,23 @@ _MONTHS = {
 
 _MONTH_ALT = "|".join(sorted(_MONTHS, key=len, reverse=True))
 
+# Locative and genitive, so «в феврале» and «с февраля» share one map.
+_MONTHS_RU = {
+    "январе": 1, "января": 1,
+    "феврале": 2, "февраля": 2,
+    "марте": 3, "марта": 3,
+    "апреле": 4, "апреля": 4,
+    "мае": 5, "мая": 5,
+    "июне": 6, "июня": 6,
+    "июле": 7, "июля": 7,
+    "августе": 8, "августа": 8,
+    "сентябре": 9, "сентября": 9,
+    "октябре": 10, "октября": 10,
+    "ноябре": 11, "ноября": 11,
+    "декабре": 12, "декабря": 12,
+}
+_MONTH_RU_ALT = "|".join(sorted(_MONTHS_RU, key=len, reverse=True))
+
 
 @dataclass(frozen=True)
 class TimeRange:
@@ -59,6 +76,60 @@ def _resolve_month_year(month: int, year: int | None, now: datetime) -> int:
         return year
     # "in February" in August → this year's February; in January → last year's.
     return now.year if month <= now.month else now.year - 1
+
+
+def _parse_russian(q: str, now: datetime) -> TimeRange | None:
+    """Russian phrases that mirror the English ones. `q` is already lowercased."""
+    if re.search(r"\bвчера\b", q):
+        start, end = _day_bounds(now - timedelta(days=1))
+        return TimeRange(start, end, "вчера")
+
+    if re.search(r"\bсегодня\b", q):
+        start, end = _day_bounds(now)
+        return TimeRange(start, end, "сегодня")
+
+    if re.search(r"\bна этой неделе\b", q):
+        start_day = now - timedelta(days=now.weekday())
+        start, _ = _day_bounds(start_day)
+        return TimeRange(start, int(now.timestamp()), "на этой неделе")
+
+    if re.search(r"\b(на прошлой неделе|за прошлую неделю)\b", q):
+        start = int((now - timedelta(days=7)).timestamp())
+        return TimeRange(start, int(now.timestamp()), "на прошлой неделе")
+
+    if re.search(r"\bв этом месяце\b", q):
+        start, _ = _month_bounds(now.year, now.month)
+        return TimeRange(start, int(now.timestamp()), "в этом месяце")
+
+    if re.search(r"\bв прошлом месяце\b", q):
+        year, month = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
+        start, end = _month_bounds(year, month)
+        return TimeRange(start, end, "в прошлом месяце")
+
+    if re.search(r"\bв этом году\b", q):
+        start = int(datetime(now.year, 1, 1, tzinfo=timezone.utc).timestamp())
+        return TimeRange(start, int(now.timestamp()), "в этом году")
+
+    if re.search(r"\bв прошлом году\b", q):
+        start = int(datetime(now.year - 1, 1, 1, tzinfo=timezone.utc).timestamp())
+        end = int(datetime(now.year, 1, 1, tzinfo=timezone.utc).timestamp()) - 1
+        return TimeRange(start, end, "в прошлом году")
+
+    m = re.search(rf"\b(?:в|во)\s+({_MONTH_RU_ALT})(?:\s+(20\d{{2}}))?\b", q)
+    if m:
+        month = _MONTHS_RU[m.group(1)]
+        year = _resolve_month_year(month, int(m.group(2)) if m.group(2) else None, now)
+        start, end = _month_bounds(year, month)
+        return TimeRange(start, end, f"{calendar.month_name[month]} {year}")
+
+    m = re.search(rf"\b(?:с|со)\s+({_MONTH_RU_ALT})(?:\s+(20\d{{2}}))?\b", q)
+    if m:
+        month = _MONTHS_RU[m.group(1)]
+        year = _resolve_month_year(month, int(m.group(2)) if m.group(2) else None, now)
+        start, _ = _month_bounds(year, month)
+        return TimeRange(start, int(now.timestamp()), f"since {calendar.month_name[month]} {year}")
+
+    return None
 
 
 def parse_time_range(question: str, now: datetime | None = None) -> TimeRange | None:
@@ -133,4 +204,4 @@ def parse_time_range(question: str, now: datetime | None = None) -> TimeRange | 
         end = int(datetime(now.year, 1, 1, tzinfo=timezone.utc).timestamp()) - 1
         return TimeRange(start, end, "last year")
 
-    return None
+    return _parse_russian(q, now)

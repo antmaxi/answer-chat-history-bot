@@ -405,8 +405,10 @@ def known_speakers(conn: sqlite3.Connection) -> list[str]:
 
 
 _SPEAKER_CUE = re.compile(
-    r"(?i)\b(did|said|says|told|tell|from|by|according to)\b"
+    r"(?iu)(\b(did|said|says|told|tell|from|by|according to)\b|"
+    r"говорил[аи]?|сказал[аи]?|писал[аи]?|спросил[аи]?|по словам)"
 )
+_RU_SPEECH = r"(?:говорил[аи]?|сказал[аи]?|писал[аи]?|спросил[аи]?)"
 
 
 def parse_speaker(question: str, names: list[str]) -> str | None:
@@ -423,9 +425,13 @@ def parse_speaker(question: str, names: list[str]) -> str | None:
             continue
         n = re.escape(name.lower())
         if re.search(
-            rf"(?i)\b(?:what |who )?did {n} (?:say|tell|ask)\b"
+            rf"(?iu)\b(?:what |who )?did {n} (?:say|tell|ask)\b"
             rf"|\b{n} (?:said|says|told|wrote)\b"
-            rf"|\b(?:from|by|according to) {n}\b",
+            rf"|\b(?:from|by|according to) {n}\b"
+            rf"|\bчто\s+{n}\s+{_RU_SPEECH}\b"
+            rf"|\bчто\s+{_RU_SPEECH}\s+{n}\b"
+            rf"|\b{n}\s+{_RU_SPEECH}\b"
+            rf"|\bпо словам\s+{n}\b",
             q,
         ):
             return name

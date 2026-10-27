@@ -126,7 +126,9 @@ CREATE TABLE IF NOT EXISTS query_log (
   search_ms   INTEGER,
   llm_ms      INTEGER,
   model       TEXT,
-  user_id     INTEGER
+  user_id     INTEGER,
+  answer      TEXT,
+  abstain     INTEGER NOT NULL DEFAULT 0
 );
 
 -- Per-user UI language (ru/en). Missing row means the default (Russian).
@@ -444,6 +446,8 @@ def migrate(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "query_log", "user_id", "INTEGER")
     ensure_column(conn, "query_log", "search_ms", "INTEGER")
     ensure_column(conn, "query_log", "llm_ms", "INTEGER")
+    ensure_column(conn, "query_log", "answer", "TEXT")
+    ensure_column(conn, "query_log", "abstain", "INTEGER NOT NULL DEFAULT 0")
     if meta_get(conn, "fts_stem") != FTS_STEM_VERSION:
         _rebuild_stemmed_fts(conn)
         meta_set(conn, "fts_stem", FTS_STEM_VERSION)
@@ -625,6 +629,8 @@ def log_query(
     user_id: int | None = None,
     search_ms: int | None = None,
     llm_ms: int | None = None,
+    answer: str | None = None,
+    abstain: bool = False,
 ) -> None:
     """Append one answered question. No-op when QUERY_LOG is off."""
     if not config.QUERY_LOG:
@@ -632,8 +638,8 @@ def log_query(
     conn.execute(
         """INSERT INTO query_log
            (ts, question, chat_ids, window_ids, cited_ids, latency_ms,
-            search_ms, llm_ms, model, user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            search_ms, llm_ms, model, user_id, answer, abstain)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             int(time.time()),
             question,
@@ -645,9 +651,35 @@ def log_query(
             llm_ms,
             model,
             user_id,
+            answer,
+            1 if abstain else 0,
         ),
     )
     conn.commit()
+
+
+def retrieval_misses(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
+    """Questions the log marks as a miss: the model abstained, or cited nothing.
+
+    Empty `cited_ids` is ambiguous on rows written before `abstain` existed
+    (a not-found, a paraphrase with no tag, or a bad retrieval). New rows set
+    `abstain` when grounding replaced the answer or retrieval was empty.
+    """
+    return list(
+        conn.execute(
+            """
+            SELECT ts, question, answer, abstain, cited_ids, window_ids
+            FROM query_log
+            WHERE abstain = 1
+               OR cited_ids IS NULL
+               OR cited_ids = ''
+               OR cited_ids = '[]'
+            ORDER BY ts DESC, id DESC
+            LIMIT ?
+            """,
+            (max(0, int(limit)),),
+        )
+    )
 
 
 def get_dm_chat(conn: sqlite3.Connection, user_id: int) -> int | None:

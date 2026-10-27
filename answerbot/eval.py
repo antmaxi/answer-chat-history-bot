@@ -6,6 +6,7 @@ in the concatenated top-k thread text", which is what the LLM would see.
 
     python -m answerbot.eval              # against DB_PATH
     python -m answerbot.eval --fixture    # load + index the fixture, then eval
+    python -m answerbot.eval --misses     # logged questions that abstained or cited nothing
 """
 
 from __future__ import annotations
@@ -72,6 +73,24 @@ def recall(results: list[CaseResult]) -> float:
     return sum(r.hit for r in results) / len(results)
 
 
+def format_miss_report(rows, limit_answer: int = 200) -> str:
+    """Text report of logged questions that abstained or cited nothing."""
+    if not rows:
+        return "no retrieval misses in query_log"
+    lines = [f"retrieval misses: {len(rows)}"]
+    for row in rows:
+        answer = (row["answer"] or "").replace("\n", " ")
+        if len(answer) > limit_answer:
+            answer = answer[: limit_answer - 1] + "…"
+        lines.append(
+            f"{row['ts']} abstain={row['abstain']} cited={row['cited_ids']}"
+        )
+        lines.append(f"  Q: {row['question']}")
+        if answer:
+            lines.append(f"  A: {answer}")
+    return "\n".join(lines)
+
+
 def main() -> None:
     import argparse
     import sys
@@ -81,7 +100,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Measure retrieval success@k on the golden set")
     ap.add_argument("--fixture", action="store_true", help="index tests/make_fixture.py into a temp DB")
     ap.add_argument("-k", type=int, default=None)
+    ap.add_argument(
+        "--misses",
+        action="store_true",
+        help="print query_log rows that abstained or cited nothing",
+    )
+    ap.add_argument("--limit", type=int, default=50)
     args = ap.parse_args()
+
+    if args.misses:
+        conn = db.connect()
+        print(format_miss_report(db.retrieval_misses(conn, args.limit)))
+        return
 
     if args.fixture:
         from .ingest.export import load_data

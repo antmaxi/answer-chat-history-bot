@@ -170,7 +170,10 @@ In the group it answers when @mentioned or replied to, or after `/ask` (then
 the next message is the question). `/ask <question>` still works in one step.
 A bare @mention as a **reply** to someone else's message treats that message
 as the question. Extra words on the ping stay the question (and, if they look
-like a follow-up, search is rewritten against the replied-to text).
+like a follow-up — including «а сколько это стоило?» — search is rewritten
+against the replied-to text). A reply to someone else also pins that
+message's thread at the front of the excerpts. A reply to the bot does not
+pin the bot's previous answer.
 In a DM it answers only
 if you are currently a member of `TELEGRAM_CHAT_ID`; otherwise it declines.
 New group messages are appended live; the tail is re-windowed every
@@ -318,10 +321,11 @@ recipe above changes. Opening an older database rebuilds the FTS index once;
 it does not re-embed.
 
 - **`TOP_K`** (`10`) — threads ranked by fusion before the excerpt cap.
-- **`MIN_K`** (`10`) / **`MAX_K`** (`10`) — excerpts sent to the LLM. Always
+- **`MIN_K`** (`4`) / **`MAX_K`** (`8`) — excerpts sent to the LLM. Always
   keep at least `MIN_K`; stop early once cosine falls below `COSINE_MIN`;
-  never send more than `MAX_K`. Defaults match `TOP_K` so the model sees
-  10 excerpts. Lower them if you want the cosine trim.
+  never send more than `MAX_K`. `MIN_K` is below `MAX_K` so the cosine floor
+  can drop the tail of a weak list. `TOP_K` still ranks 10 threads before
+  that cap.
 - **`COSINE_MIN`** (`0.7`) — cosine floor for extra excerpts after `MIN_K`.
   `0` disables the cutoff (always send `MAX_K`).
 - **`ADMIN_EXTRA_K`** (`30`) — when an admin asks, this many ranked excerpts
@@ -335,10 +339,14 @@ it does not re-embed.
   speaker's nearby lines so a "yeah" still has a little context.
 - **`THREAD_OVERLAP_JACCARD`** (`0.5`) — merge expansions that share at least
   this fraction of messages.
-- **`RECENCY_HALF_LIFE_DAYS`** (`365`) — fused scores are multiplied by
-  `0.5^(age / half-life)` using each message's timestamp, so a year-old
-  excerpt scores half as much as an equally relevant one from today.
-  `0` disables. Questions that already name a time range skip this.
+- **`RECENCY_HALF_LIFE_DAYS`** (`365`) — when the question looks current
+  («сейчас», «актуально», «сколько стоит», `now`, `how much does it cost`),
+  fused scores are multiplied by `0.5^(age / half-life)` using each message's
+  timestamp, so a year-old excerpt scores half as much as an equally relevant
+  one from today. Neutral questions and decision questions («что решили»,
+  «о чём договорились», `what did we decide`) skip it, and a decision cue
+  wins if both match. `0` disables. Questions that already name a time range
+  skip this too.
 - **`RRF_K`** (`20`) — RRF smoothing; lower keeps the top ranks more
   separated (the usual paper default is 60, which is meant for much longer
   result lists).
@@ -349,6 +357,20 @@ it does not re-embed.
   this fraction of messages are dropped from the keyword query (particles
   like "на" / "как" / "да" / "the"). Chat messages are short, so 0.25 often
   matches nothing. Admins can inspect the bands with `/stats 2 5`.
+- **`RARE_STEM_DF_RATIO`** (`0.005`) — if the rarest informative query stem
+  is in at most this fraction of messages, its own BM25 hits are unioned
+  into the keyword pool before fusion. `0` disables. The cutoff is at least
+  one message.
+- **`RERANK`** (`1`) — after fusion, a small multilingual cross-encoder
+  scores the question against each expanded thread and reorders that pool.
+  `0` / `off` keeps fusion order. This does not read the vector store, so
+  it does not need a reindex. It cannot retrieve a message the pool missed.
+- **`RERANK_MODEL`** (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) — the
+  cross-encoder. The bot loads it at startup, same as the embed model.
+- **`RERANK_MAX`** (`32`) — how many fused threads to score. The rest stay
+  behind that block. **`RERANK_MAX_LENGTH`** (`256`) is the token cap per
+  thread. **`RERANK_BATCH`** (`8`) is the CPU batch size. Thread count is
+  `EMBED_THREADS`.
 - **`STOPWORD_KEEP`** (`цюрих,швейцария`) — stems that are never dropped,
   including inflected forms (`цюрихе`, `швейцарии`). Set to empty / `off`
   to clear. Place names can sit in the same DF band as particles.
@@ -380,7 +402,9 @@ setup.
 
 A reply that says it couldn't find the answer (the canonical English
 sentence, or a short Russian refusal) is shown **without** the source list
-or the jump link. The retrieved windows are still stored in `query_log`.
+or the jump link. The retrieved windows, the reply text, and whether
+grounding abstained are stored in `query_log`. `python -m answerbot.eval
+--misses` lists questions where `abstain` is set or `cited_ids` is empty.
 Numbers, times, backtick spans, and tokens that mix letters and digits are
 checked against the excerpts with timestamp prefixes ignored. If any of
 those is missing from every excerpt, the reply is replaced with the

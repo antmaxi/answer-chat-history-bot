@@ -1435,10 +1435,60 @@ class TestRecency:
             ],
         )
         index.reindex(conn, progress=False)
-        hits = retrieve.search(conn, "wifi password", chat_id=1, now=now)
+        hits = retrieve.search(conn, "wifi password now", chat_id=1, now=now)
         assert len(hits) >= 2
         assert hits[0].ts_end == new
         assert hits[1].ts_end == old
+
+    def test_neutral_question_skips_recency(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "RECENCY_HALF_LIFE_DAYS", 365)
+
+        def boom(*_a, **_k):
+            raise AssertionError("recency should not run for a neutral question")
+
+        monkeypatch.setattr(retrieve, "recency_weight", boom)
+        now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        old = int(datetime(2024, 8, 1, tzinfo=timezone.utc).timestamp())
+        new = int(datetime(2026, 7, 1, tzinfo=timezone.utc).timestamp())
+        seed(
+            conn,
+            [
+                (1, old, "the office wifi password is hunter2"),
+                (2, new, "the office wifi password is hunter2"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(conn, "wifi password", chat_id=1, now=now)
+        assert {h.ts_end for h in hits} >= {old, new}
+
+    def test_decision_question_skips_recency_even_with_now(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "RECENCY_HALF_LIFE_DAYS", 365)
+
+        def boom(*_a, **_k):
+            raise AssertionError("a decision question should not use recency")
+
+        monkeypatch.setattr(retrieve, "recency_weight", boom)
+        now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        seed(
+            conn,
+            [
+                (1, int(now.timestamp()) - 86400, "the office wifi password is hunter2"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(
+            conn, "what did we decide about the wifi password now", chat_id=1, now=now
+        )
+        assert hits and "hunter2" in hits[0].text
+
+    def test_current_and_decision_cues(self):
+        assert retrieve.wants_recency("сколько сейчас стоит виза")
+        assert retrieve.wants_recency("актуально ли это")
+        assert retrieve.wants_recency("how much does it cost now")
+        assert not retrieve.wants_recency("wifi password")
+        assert not retrieve.wants_recency("что решили сейчас")
+        assert not retrieve.wants_recency("о чём договорились")
+        assert not retrieve.wants_recency("what did we decide now")
 
     def test_time_range_skips_recency_decay(self, conn, fake_embed, monkeypatch):
         """An explicit period already scoped the hits; don't decay inside it."""
@@ -1464,6 +1514,126 @@ class TestRecency:
             conn, "wifi password", chat_id=1, now=now, time_range=span
         )
         assert {h.ts_end for h in hits} >= {old, new}
+
+
+class TestPinReply:
+    def test_pinned_message_is_the_first_excerpt(self, conn, fake_embed):
+        seed(
+            conn,
+            [
+                (1, 1, "the ski trip cost 200 lari"),
+                (2, 100_000_000, "office wifi password is hunter2"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(conn, "а сколько?", chat_id=1, pin=(1, 1))
+        assert hits
+        assert "200 lari" in hits[0].text
+
+        hits = retrieve.search(conn, "wifi password", chat_id=1, pin=(1, 1))
+        assert "200 lari" in hits[0].text
+        assert any("hunter2" in h.text for h in hits)
+
+    def test_missing_pin_is_ignored(self, conn, fake_embed):
+        seed(conn, [(2, 100_000_000, "office wifi password is hunter2")])
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(conn, "wifi password", chat_id=1, pin=(1, 99))
+        assert hits and "hunter2" in hits[0].text
+
+
+class TestRareStem:
+    def test_rare_stem_is_unioned_when_the_keyword_slice_drops_it(
+        self, conn, fake_embed, monkeypatch
+    ):
+        monkeypatch.setattr(config, "TOP_K", 1)
+        monkeypatch.setattr(config, "STOPWORD_DF_RATIO", 1.0)
+        monkeypatch.setattr(config, "RARE_STEM_DF_RATIO", 0.2)
+        monkeypatch.setattr(retrieve, "_vector_scores", lambda *_a, **_k: ([], []))
+        gap = config.THREAD_RADIUS_SECONDS + config.THREAD_SAME_SPEAKER_SECONDS + 100
+        rows = [(i, i * gap, f"alpha beta gamma note{i}") for i in range(1, 9)]
+        rows.append((9, 9 * gap, "uniqname onlyhere"))
+        seed(conn, rows)
+        index.reindex(conn, progress=False)
+
+        real = retrieve.keyword_search
+
+        def drop_rare(c, question, chat_id, limit, time_range=None):
+            ids = real(c, question, chat_id, limit, time_range)
+            if not ids:
+                return ids
+            marks = ",".join("?" * len(ids))
+            texts = {
+                row[0]: row[1]
+                for row in c.execute(
+                    f"SELECT id, text FROM messages WHERE id IN ({marks})", ids
+                )
+            }
+            return [i for i in ids if "uniqname" not in (texts.get(i) or "")]
+
+        monkeypatch.setattr(retrieve, "keyword_search", drop_rare)
+        hits = retrieve.search(conn, "alpha beta gamma uniqname", chat_id=1)
+        assert any("uniqname" in h.text for h in hits)
+
+    def test_merge_reserves_room_for_ids_the_slice_missed(self):
+        merged = retrieve.merge_rare_ids([1, 2, 3, 4], [9, 2], 4)
+        assert merged[0] == 9
+        assert 2 in merged
+        assert len(merged) == 4
+        assert 4 not in merged
+
+
+class TestRerank:
+    def test_cross_encoder_reorders_the_fused_pool(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "RERANK", True)
+        gap = config.THREAD_RADIUS_SECONDS + config.THREAD_SAME_SPEAKER_SECONDS + 100
+        seed(
+            conn,
+            [
+                (1, gap, "the office wifi password is hunter2"),
+                (2, gap * 2, "the office wifi password is secret9"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+
+        def prefer_secret(_question, texts):
+            return [10.0 if "secret9" in text else 0.0 for text in texts]
+
+        monkeypatch.setattr("answerbot.rerank.score", prefer_secret)
+        hits = retrieve.search(conn, "wifi password", chat_id=1)
+        assert len(hits) >= 2
+        assert "secret9" in hits[0].text
+
+    def test_pin_stays_ahead_of_the_reranked_pool(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "RERANK", True)
+        gap = config.THREAD_RADIUS_SECONDS + config.THREAD_SAME_SPEAKER_SECONDS + 100
+        seed(
+            conn,
+            [
+                (1, gap, "the ski trip cost 200 lari"),
+                (2, gap * 2, "the office wifi password is hunter2"),
+            ],
+        )
+        index.reindex(conn, progress=False)
+
+        def prefer_wifi(_question, texts):
+            return [10.0 if "hunter2" in text else 0.0 for text in texts]
+
+        monkeypatch.setattr("answerbot.rerank.score", prefer_wifi)
+        hits = retrieve.search(conn, "wifi password lari", chat_id=1, pin=(1, 1))
+        assert "200 lari" in hits[0].text
+        assert any("hunter2" in h.text for h in hits[1:])
+
+    def test_disabled_rerank_does_not_score(self, conn, fake_embed, monkeypatch):
+        monkeypatch.setattr(config, "RERANK", False)
+
+        def boom(*_a, **_k):
+            raise AssertionError("rerank should stay off")
+
+        monkeypatch.setattr("answerbot.rerank.score", boom)
+        seed(conn, [(1, 1, "the office wifi password is hunter2")])
+        index.reindex(conn, progress=False)
+        hits = retrieve.search(conn, "wifi password", chat_id=1)
+        assert hits and "hunter2" in hits[0].text
 
 
 def _insert_full(conn, rows):

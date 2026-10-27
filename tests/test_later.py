@@ -58,6 +58,20 @@ class TestFollowup:
         assert followup.rewrite("how much was it", None) == "how much was it"
         assert followup.rewrite("how much was it", "  ") == "how much was it"
 
+    def test_russian_followup_is_stitched(self):
+        q = "а сколько это стоило?"
+        assert followup.looks_like_followup(q)
+        assert followup.rewrite(q, "лыжная поездка") == (
+            "лыжная поездка — follow-up: а сколько это стоило?"
+        )
+        assert followup.looks_like_followup("а сколько?")
+        assert followup.looks_like_followup("сколько это стоило")
+
+    def test_full_russian_question_is_not_a_followup(self):
+        q = "а сколько стоит виза в швейцарии в этом году"
+        assert followup.looks_like_followup(q) is False
+        assert followup.rewrite(q, "лыжная поездка") == q
+
 
 class TestMentionReply:
     def test_bare_mention_uses_replied_text(self):
@@ -158,6 +172,13 @@ class TestSpeakerParse:
 
     def test_short_names_are_ignored(self):
         assert people.parse_speaker("what did Ed say", ["Ed", "Nino"]) is None
+
+    def test_russian_speaker_cues(self):
+        names = ["Нино", "Анна"]
+        assert people.parse_speaker("что Нино говорила про стендап", names) == "Нино"
+        assert people.parse_speaker("Нино сказала что перенесли", names) == "Нино"
+        assert people.parse_speaker("по словам Нино стендап в 10:30", names) == "Нино"
+        assert people.parse_speaker("как дела у Нино", names) is None
 
 
 class TestSpeakerSearch:

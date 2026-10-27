@@ -513,6 +513,8 @@ def _record(
         user_id=user_id,
         search_ms=search_ms,
         llm_ms=llm_ms,
+        answer=result.text,
+        abstain=result.abstain,
     )
 
 

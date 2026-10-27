@@ -64,6 +64,10 @@ WEIGHT_KEYWORD = float(os.getenv("WEIGHT_KEYWORD", "0.7"))
 # stopwords and dropped from the keyword query. Chat lines are short, so even
 # particles rarely reach 25% DF; 0.02 is where this chat's function words sit.
 STOPWORD_DF_RATIO = float(os.getenv("STOPWORD_DF_RATIO", "0.02"))
+# A query stem at or below this fraction of messages is also searched on its
+# own and unioned into the keyword pool, so a rare name or price is not
+# crowded out by common stems. 0 disables. The cutoff is at least one message.
+RARE_STEM_DF_RATIO = float(os.getenv("RARE_STEM_DF_RATIO", "0.005"))
 
 
 def parse_stopword_keep(raw: str | None) -> tuple[str, ...]:
@@ -84,16 +88,27 @@ def parse_stopword_keep(raw: str | None) -> tuple[str, ...]:
 STOPWORD_KEEP = parse_stopword_keep(os.getenv("STOPWORD_KEEP"))
 # Fusion still ranks TOP_K windows; the LLM only sees a prefix of that list.
 # Always keep MIN_K, then stop at the first hit whose cosine is below COSINE_MIN,
-# never more than MAX_K. Defaults match TOP_K so the model sees 10 excerpts.
-# COSINE_MIN=0 disables the cutoff (always send MAX_K). Lower MIN_K/MAX_K to trim.
-MIN_K = int(os.getenv("MIN_K", str(TOP_K)))
-MAX_K = int(os.getenv("MAX_K", str(TOP_K)))
+# never more than MAX_K. MIN_K is below MAX_K so the cosine floor can drop the
+# tail. COSINE_MIN=0 disables the cutoff (always send MAX_K).
+MIN_K = int(os.getenv("MIN_K", "4"))
+MAX_K = int(os.getenv("MAX_K", "8"))
 COSINE_MIN = float(os.getenv("COSINE_MIN", "0.7"))
-# Fused scores are multiplied by 0.5^(age_days / half_life) using ts_end, so a
-# year-old window scores half as much as an equivalent one from today when the
-# half-life is 365. 0 disables. Time-range questions skip this — the filter
-# already scoped the period.
+# Fused scores are multiplied by 0.5^(age_days / half_life) using ts_end, and
+# only when the question looks current (сейчас, актуально, сколько стоит, now,
+# how much does it cost). Decision questions (что решили, what did we decide)
+# skip it even if they also look current. 0 disables. Time-range questions
+# skip this too — the filter already scoped the period.
 RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "365"))
+# Cross-encoder over the fused thread pool (question against each expanded
+# thread). One CPU pass per question; it does not touch stored vectors.
+# 0 / off keeps fusion order. A failure to load the model also keeps it.
+RERANK = os.getenv("RERANK", "1").strip().lower() not in ("0", "false", "no", "off", "none")
+RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+# How many fused threads to score. The rest stay behind them in fusion order.
+RERANK_MAX = int(os.getenv("RERANK_MAX", "32"))
+RERANK_BATCH = int(os.getenv("RERANK_BATCH", "8"))
+# Token cap for each thread. The model truncates past this.
+RERANK_MAX_LENGTH = int(os.getenv("RERANK_MAX_LENGTH", "256"))
 # Intra-op threads for the local embedding model. 1 keeps a small VPS usable.
 EMBED_THREADS = int(os.getenv("EMBED_THREADS", "1"))
 # Passage embedded for each message (the vector stays keyed to that message).

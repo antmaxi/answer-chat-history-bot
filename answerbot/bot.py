@@ -672,19 +672,25 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
     tracked = _track_in_flight(key)
     t0 = time.monotonic()
     try:
+        pin = None
         prior = _history[key][-1] if _history[key] else None
         force = False
         reply = message.reply_to_message
         if reply is not None:
             me = await message.bot.me()
+            reply_from_bot = bool(
+                reply.from_user and reply.from_user.id == me.id
+            )
             prior, force = followup.search_prior_for_reply(
                 question,
                 history_prior=prior,
                 reply_text=reply.text or reply.caption,
-                reply_from_bot=bool(
-                    reply.from_user and reply.from_user.id == me.id
-                ),
+                reply_from_bot=reply_from_bot,
             )
+            # A reply to someone else's message is the thread to answer about.
+            # A reply to the bot stays on the previous question, not the bot's text.
+            if not reply_from_bot:
+                pin = (reply.chat.id, reply.message_id)
         search_q = followup.rewrite(question, prior, force=force)
 
         phrase = i18n.thinking_phrase(lang)
@@ -714,10 +720,11 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
                 chat_id,
                 query_vec=query_vec,
                 extra_k=extra_k,
+                pin=pin,
             )
         else:
             hits = await _db(
-                retrieve.search, conn, search_q, chat_id, query_vec=query_vec
+                retrieve.search, conn, search_q, chat_id, query_vec=query_vec, pin=pin
             )
             spare = []
         search_ms = int((time.monotonic() - search_t0) * 1000)
@@ -1508,6 +1515,15 @@ async def _on_startup(bot: Bot) -> None:
         log.info("embedding model ready")
     except Exception:
         log.exception("embedding warmup failed; the first search will load the model")
+    if config.RERANK:
+        log.info("warming cross-encoder (%s)", config.RERANK_MODEL)
+        try:
+            from . import rerank
+
+            await asyncio.to_thread(rerank.warmup)
+            log.info("cross-encoder ready")
+        except Exception:
+            log.exception("cross-encoder warmup failed; search will keep fusion order")
     asyncio.create_task(_sync_ichbin())
     s = db.stats(conn)
     _seed_typical_ask(s)
