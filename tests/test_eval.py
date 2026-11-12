@@ -45,6 +45,27 @@ def test_golden_set_keyword_success(conn, fake_embed):
     assert ev.recall(results) == 1.0
 
 
+def test_annotated_eval_uses_production_cosine_cap(conn, monkeypatch, tmp_path):
+    import json
+
+    gap = 2 * config.THREAD_RADIUS_SECONDS + 1
+    seed(conn, [(i, gap * i, "sighting") for i in range(1, 7)], chat_id=10)
+    seed(conn, [(5, gap * 5, "sighting")], chat_id=20)
+    path = tmp_path / "cases.json"
+    path.write_text(json.dumps([{
+        "question": "sighting", "chat_ids": [10], "evidence": [[10, 5]],
+    }]))
+    cases = ev.load_cases(path)
+    monkeypatch.setattr(config, "MIN_K", 4)
+    monkeypatch.setattr(config, "MAX_K", 8)
+    monkeypatch.setattr(config, "COSINE_MIN", 0.7)
+    [miss] = ev.evaluate(conn, cases)
+    assert (miss.candidate_recall, miss.evidence_recall, miss.first_relevant_rank) == (1, 0, None)
+    monkeypatch.setattr(config, "COSINE_MIN", 0.0)
+    [found] = ev.evaluate(conn, cases)
+    assert (found.candidate_recall, found.evidence_recall, found.first_relevant_rank) == (1, 1, 5)
+
+
 class TestTimeRangeParse:
     now = datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc)
 

@@ -135,6 +135,26 @@ class TestIndexAndSearch:
 
 
 class TestRetrieveMerge:
+    def test_faq_counts_toward_production_cap(self, conn, fake_embed, faq_on, monkeypatch):
+        monkeypatch.setattr(config, "FAQ_TOP_K", 1)
+        monkeypatch.setattr(config, "MAX_K", 3)
+        gap = config.THREAD_RADIUS_SECONDS + 1
+        conn.executemany(
+            "INSERT INTO messages (chat_id, msg_id, ts, sender, text) VALUES (1, ?, ?, 'A', ?)",
+            [(i, gap * i, f"мусор: сообщение {i}") for i in range(1, 6)],
+        )
+        conn.commit()
+        index.reindex(conn, progress=False)
+        _index(conn)
+        hits, extra = retrieve.search_with_extra(conn, "мусор", chat_id=1, extra_k=3)
+        assert [h.kind for h in hits] == ["faq", "chat", "chat"]
+        assert [h.kind for h in extra] == ["chat", "chat", "chat"]
+        assert {h.log_id() for h in hits}.isdisjoint(h.log_id() for h in extra)
+
+        monkeypatch.setattr(config, "MAX_K", 1)
+        [pinned] = retrieve.search(conn, "мусор", chat_id=1, pin=(1, 5))
+        assert pinned.msg_ids == (5,)
+
     def test_faq_hits_come_first(self, conn, fake_embed, faq_on):
         conn.execute(
             "INSERT INTO messages (chat_id, msg_id, ts, sender, text) "

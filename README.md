@@ -54,8 +54,10 @@ python -m answerbot.search "how much was the ski trip"  # inspect retrieval
 python -m answerbot.answer "how much was the ski trip"  # grounded answer + sources
 ```
 
-`search` takes `-k N` for the number of results and `--full` to print whole
-windows instead of excerpts. `answer` needs an LLM key set for the chosen
+`search` takes `-k N` to override the production cap and `--full` to print full
+threads. Add `--explain` to write JSON diagnostics to stderr, including inferred
+filters, candidate ranks, thread message IDs, reranker scores, and removal reasons.
+`answer` needs an LLM key set for the chosen
 `LLM_PROVIDER` (Claude, Gemini, Groq, OpenRouter, or Cursor).
 
 ### Topping up with new history
@@ -320,17 +322,14 @@ the vectors moved from windows to messages, and again after the passage
 recipe above changes. Opening an older database rebuilds the FTS index once;
 it does not re-embed.
 
-- **`TOP_K`** (`10`) — threads ranked by fusion before the excerpt cap.
-- **`MIN_K`** (`4`) / **`MAX_K`** (`8`) — excerpts sent to the LLM. Always
-  keep at least `MIN_K`; stop early once cosine falls below `COSINE_MIN`;
-  never send more than `MAX_K`. `MIN_K` is below `MAX_K` so the cosine floor
-  can drop the tail of a weak list. `TOP_K` still ranks 10 threads before
-  that cap.
-- **`COSINE_MIN`** (`0.7`) — cosine floor for extra excerpts after `MIN_K`.
-  `0` disables the cutoff (always send `MAX_K`).
+- **`RETRIEVAL_CANDIDATES`** (`100`) — message candidates per search method and
+  after fusion, before thread expansion and reranking.
+- **`TOP_K`** (`10`) — ranked chat threads before the excerpt cap.
+- **`MAX_K`** (`8`) — maximum excerpts sent to the LLM, including FAQ. If you set
+  **`COSINE_MIN`** (default `0`), the list stops at the first excerpt below
+  that cosine floor after **`MIN_K`** (`4`).
 - **`ADMIN_EXTRA_K`** (`30`) — when an admin asks, this many ranked excerpts
-  past the production cap are attached under a spoiler. The model still sees
-  only `MIN_K`..`MAX_K` (plus FAQ). `0` hides them.
+  past the production cap are attached under a spoiler. `0` hides them.
 - **`THREAD_RADIUS_SECONDS`** (same as `WINDOW_GAP_SECONDS`) — how far from
   the seed to look for thread members (plus the seed's reply chain).
 - **`THREAD_COSINE_MIN`** (`0.65`) — a neighbour is kept when its embedding
@@ -341,9 +340,8 @@ it does not re-embed.
   this fraction of messages.
 - **`RECENCY_HALF_LIFE_DAYS`** (`365`) — when the question looks current
   («сейчас», «актуально», «сколько стоит», `now`, `how much does it cost`),
-  fused scores are multiplied by `0.5^(age / half-life)` using each message's
-  timestamp, so a year-old excerpt scores half as much as an equally relevant
-  one from today. Neutral questions and decision questions («что решили»,
+  fused scores are multiplied by `0.5^(age / half-life)` and reranker logits
+  receive the same penalty in log space. Neutral and decision questions («что решили»,
   «о чём договорились», `what did we decide`) skip it, and a decision cue
   wins if both match. `0` disables. Questions that already name a time range
   skip this too.
@@ -367,7 +365,7 @@ it does not re-embed.
   it does not need a reindex. It cannot retrieve a message the pool missed.
 - **`RERANK_MODEL`** (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) — the
   cross-encoder. The bot loads it at startup, same as the embed model.
-- **`RERANK_MAX`** (`32`) — how many fused threads to score. The rest stay
+- **`RERANK_MAX`** (`100`) — how many fused threads to score. The rest stay
   behind that block. **`RERANK_MAX_LENGTH`** (`256`) is the token cap per
   thread. **`RERANK_BATCH`** (`8`) is the CPU batch size. Thread count is
   `EMBED_THREADS`.
@@ -509,4 +507,11 @@ check (keyword success@k on the synthetic fixture). For real embeddings:
 python -m answerbot.eval --fixture
 ```
 
-against an already-indexed DB, drop `--fixture`.
+To evaluate questions from your own chat, review the expected messages and
+store the cases as a JSON list in `data/search-benchmark.json`. Each case has
+a `question` and an `evidence` list of `[chat_id, msg_id]` pairs. Optional
+`chat_ids` restricts search scope, and `now` sets the query time in Unix seconds.
+Run `python -m answerbot.eval --cases data/search-benchmark.json` against the
+indexed database. It uses the production excerpt cap and reports recall
+among fused seeds and final excerpts, first relevant rank, annotated excerpt
+precision, and latency.

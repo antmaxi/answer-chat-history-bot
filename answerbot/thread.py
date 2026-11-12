@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from math import isfinite
+from typing import Any, TypeVar
 
 from . import config
 
@@ -18,6 +19,7 @@ from . import config
 _MENTION = re.compile(r"@([A-Za-z0-9_]{3,32})")
 
 Msg = Mapping[str, Any]
+MessageKey = TypeVar("MessageKey", int, tuple[int, int])
 
 
 def mentions_in(text: str | None) -> list[str]:
@@ -117,13 +119,18 @@ def expand_thread(
     seed_ts = _ts(seed)
 
     def similar(mid: int) -> bool:
-        return mid in cosine and cosine[mid] >= cosine_min
+        value = cosine.get(mid)
+        return value is not None and isfinite(value) and value >= cosine_min
 
     def no_vector(mid: int) -> bool:
         return mid not in cosine
 
-    others = [c for mid, c in cosine.items() if mid != seed_msg_id]
-    discriminative = bool(others) and (max(others) - min(others)) >= cosine_min > 0
+    self_cosine = cosine.get(seed_msg_id, 0.0)
+    degenerate = (
+        not isfinite(self_cosine)
+        or self_cosine <= 1e-6
+        or not any(mid != seed_msg_id and isfinite(c) for mid, c in cosine.items())
+    )
 
     if cosine_min > 0:
         for mid in by_id:
@@ -133,7 +140,7 @@ def expand_thread(
     # Collapsed / missing embeddings cannot tell two topics apart. Keep the
     # whole candidate burst (already radius-clipped) so a keyword hit still
     # carries the next-line answer.
-    if not discriminative:
+    if degenerate:
         included.update(by_id)
 
     def thread_senders() -> set[int]:
@@ -187,7 +194,7 @@ def expand_thread(
 
 
 def _cap(msgs: list[Msg], seed_msg_id: int, max_msgs: int, max_chars: int) -> list[Msg]:
-    """Drop messages farthest from the seed until size caps hold. Never drop the seed."""
+    """Keep the seed and prefer direct replies over incidental neighbours."""
     if not msgs:
         return []
     max_msgs = max(1, max_msgs)
@@ -195,23 +202,29 @@ def _cap(msgs: list[Msg], seed_msg_id: int, max_msgs: int, max_chars: int) -> li
     by_id = {_mid(m): m for m in msgs}
     seed = by_id[seed_msg_id]
     seed_ts = _ts(seed)
+    parent_id = _reply_to(seed)
 
-    def over(chosen: list[Msg]) -> bool:
-        if len(chosen) > max_msgs:
-            return True
-        return sum(len(_text(m)) for m in chosen) > max_chars
+    ranked = sorted(
+        (m for m in msgs if _mid(m) != seed_msg_id),
+        key=lambda m: (
+            0 if _mid(m) == parent_id or _reply_to(m) == seed_msg_id else 1,
+            abs(_ts(m) - seed_ts),
+            abs(_mid(m) - seed_msg_id),
+        ),
+    )
+    kept = {seed_msg_id}
+    chars = len(_text(seed))
+    for m in ranked:
+        if len(kept) >= max_msgs:
+            break
+        size = len(_text(m))
+        if chars + size <= max_chars:
+            kept.add(_mid(m))
+            chars += size
+    return [m for m in msgs if _mid(m) in kept]
 
-    chosen = list(msgs)
-    while over(chosen) and len(chosen) > 1:
-        farthest = max(
-            (m for m in chosen if _mid(m) != seed_msg_id),
-            key=lambda m: (abs(_ts(m) - seed_ts), abs(_mid(m) - seed_msg_id)),
-        )
-        chosen.remove(farthest)
-    return chosen
 
-
-def jaccard(a: Sequence[int], b: Sequence[int]) -> float:
+def jaccard(a: Sequence[MessageKey], b: Sequence[MessageKey]) -> float:
     """Overlap of two msg_id lists. Empty vs anything is 0."""
     sa, sb = set(a), set(b)
     if not sa or not sb:
@@ -220,10 +233,10 @@ def jaccard(a: Sequence[int], b: Sequence[int]) -> float:
 
 
 def dedupe_seeds(
-    ranked: Sequence[tuple[int, float]],
-    members: Mapping[int, Sequence[int]],
+    ranked: Sequence[tuple[MessageKey, float]],
+    members: Mapping[MessageKey, Sequence[MessageKey]],
     overlap: float | None = None,
-) -> list[int]:
+) -> list[MessageKey]:
     """Greedy keep of seed ids whose expanded threads barely overlap.
 
     `ranked` is (seed_msg_id, score) best-first. `members` maps seed → msg_ids
@@ -231,13 +244,13 @@ def dedupe_seeds(
     thread is ≥ `overlap`.
     """
     threshold = config.THREAD_OVERLAP_JACCARD if overlap is None else overlap
-    kept: list[int] = []
-    kept_sets: list[set[int]] = []
+    kept: list[MessageKey] = []
+    kept_sets: list[set[MessageKey]] = []
     for seed_id, _score in ranked:
         ids = set(members.get(seed_id, ()))
         if not ids:
             continue
-        if any(jaccard(ids, prev) >= threshold for prev in kept_sets):
+        if any(ids & prev and jaccard(ids, prev) >= threshold for prev in kept_sets):
             continue
         kept.append(seed_id)
         kept_sets.append(ids)

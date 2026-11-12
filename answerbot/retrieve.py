@@ -9,9 +9,11 @@ same burst do not share one excerpt.
 
 import re
 import sqlite3
+from bisect import bisect_left
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from math import log
 
 import numpy as np
 
@@ -77,6 +79,30 @@ class Hit:
         if self.kind == "faq":
             return -int(self.window_id)
         return int(self.window_id)
+
+
+@dataclass
+class CandidateTrace:
+    chat_id: int
+    msg_id: int
+    keyword_rank: int | None
+    vector_rank: int | None
+    fusion_rank: int
+    fusion_score: float
+    cosine: float | None
+    members: tuple[int, ...] = ()
+    reranker_score: float | None = None
+    final_rank: int | None = None
+    outcome: str = "outside fused pool"
+
+
+@dataclass
+class SearchTrace:
+    chats: list[int] | None = None
+    time_range: TimeRange | None = None
+    speaker: str | None = None
+    candidate_limit: int = 0
+    candidates: list[CandidateTrace] = field(default_factory=list)
 
 
 def _doc_frequency(conn: sqlite3.Connection, token: str) -> int:
@@ -451,12 +477,20 @@ def _with_faq(
     query_vec: np.ndarray | None,
     time_range: TimeRange | None,
     speaker: str | None,
+    explicit_k: bool,
+    pinned: Hit | None,
 ) -> list[Hit]:
     if time_range is not None or speaker:
         return hits
     from . import faq
 
-    return faq.prepend(conn, question, hits, query_vec=query_vec)
+    merged = faq.prepend(conn, question, hits, query_vec=query_vec)
+    if explicit_k:
+        return merged
+    kept = merged[:max(1, config.MAX_K)]
+    if pinned is not None and pinned in hits and pinned not in kept:
+        kept[-1] = pinned
+    return kept
 
 
 def cap_hits(
@@ -559,15 +593,14 @@ def _seed_cosines(
     ids, matrix, _times = _vectors(conn, chat_id)
     if not ids:
         return {}
-    index = {mid: i for i, mid in enumerate(ids)}
-    seed_i = index.get(seed["id"])
-    if seed_i is None:
+    seed_i = bisect_left(ids, seed["id"])
+    if seed_i == len(ids) or ids[seed_i] != seed["id"]:
         return {}
     seed_vec = matrix[seed_i]
     out: dict[int, float] = {}
     for row in candidates:
-        j = index.get(row["id"])
-        if j is None:
+        j = bisect_left(ids, row["id"])
+        if j == len(ids) or ids[j] != row["id"]:
             continue
         out[row["msg_id"]] = float(matrix[j] @ seed_vec)
     return out
@@ -651,33 +684,39 @@ _DECISION_Q = re.compile(
 )
 
 
-def _apply_rerank(question: str, hits: list[Hit]) -> list[Hit]:
-    """Reorder the fused pool by a cross-encoder. Fusion order if it is off.
-
-    Unscored hits past RERANK_MAX keep a score below the worst scored hit so
-    a later recency sort cannot pull them ahead of the reranked block.
-    """
+def _apply_rerank(
+    question: str,
+    hits: list[Hit],
+    traces_by_hit: dict[int, CandidateTrace],
+) -> tuple[list[Hit], int]:
+    """Return the reordered pool and the number of cross-encoder scores."""
     if len(hits) < 2 or not config.RERANK:
-        return hits
+        return hits, 0
     from . import rerank
 
     n = min(len(hits), max(1, config.RERANK_MAX))
     head, tail = hits[:n], hits[n:]
     scores = rerank.score(question, [h.text for h in head])
     if not scores or len(scores) != len(head):
-        return hits
+        return hits, 0
     for hit, value in zip(head, scores):
         hit.score = value
+        if id(hit) in traces_by_hit:
+            traces_by_hit[id(hit)].reranker_score = value
     head.sort(key=lambda h: -h.score)
     if tail:
         floor = min(h.score for h in head) - 1.0
         for i, hit in enumerate(tail):
             hit.score = floor - i
-    return head + tail
+    return head + tail, n
 
 
 def _apply_recency(
-    hits: list[Hit], now: datetime, time_range: TimeRange | None, question: str
+    hits: list[Hit],
+    now: datetime,
+    time_range: TimeRange | None,
+    question: str,
+    reranked: int = 0,
 ) -> None:
     if not hits or config.RECENCY_HALF_LIFE_DAYS <= 0 or time_range is not None:
         return
@@ -685,9 +724,18 @@ def _apply_recency(
         return
     now_ts = int(now.timestamp())
     half = config.RECENCY_HALF_LIFE_DAYS
-    for hit in hits:
-        hit.score *= recency_weight(hit.ts_end, now_ts, half)
-    hits.sort(key=lambda h: -h.score)
+    if reranked:
+        # The cross-encoder returns logits. Multiplying negative logits by a
+        # fraction promotes older hits; apply the age penalty in log space.
+        head = hits[:reranked]
+        for hit in head:
+            age = max(0, now_ts - hit.ts_end)
+            hit.score -= log(2.0) * age / (86400 * half)
+        hits[:reranked] = sorted(head, key=lambda h: -h.score)
+    else:
+        for hit in hits:
+            hit.score *= recency_weight(hit.ts_end, now_ts, half)
+        hits.sort(key=lambda h: -h.score)
 
 
 def _parse_pin(pin: tuple[int, int] | None) -> tuple[int, int] | None:
@@ -764,7 +812,10 @@ def _place_pin(hits: list[Hit], pinned: Hit | None) -> list[Hit]:
     if pinned is None:
         return hits
     ids = set(pinned.msg_ids)
-    rest = [h for h in hits if not ids or not (set(h.msg_ids) & ids)]
+    rest = [
+        h for h in hits
+        if h.chat_id != pinned.chat_id or not (set(h.msg_ids) & ids)
+    ]
     return [pinned, *rest]
 
 
@@ -799,6 +850,8 @@ def search(
     speaker: str | None = None,
     query_vec: np.ndarray | None = None,
     pin: tuple[int, int] | None = None,
+    *,
+    trace: SearchTrace | None = None,
 ) -> list[Hit]:
     """Excerpts the model sees. Same list as `search_with_extra` without the spare tail."""
     hits, _spare = search_with_extra(
@@ -811,6 +864,7 @@ def search(
         speaker,
         query_vec,
         pin=pin,
+        trace=trace,
     )
     return hits
 
@@ -826,12 +880,20 @@ def search_with_extra(
     query_vec: np.ndarray | None = None,
     extra_k: int = 0,
     pin: tuple[int, int] | None = None,
+    *,
+    trace: SearchTrace | None = None,
 ) -> tuple[list[Hit], list[Hit]]:
     """Production excerpts, plus up to `extra_k` ranked hits the model does not see.
 
     An explicit `top_k` skips the cosine cap and returns no spare hits.
     """
     chats = normalize_chat_ids(chat_id)
+    if trace is not None:
+        trace.chats = chats
+        trace.speaker = speaker
+        trace.time_range = time_range
+        trace.candidate_limit = 0
+        trace.candidates.clear()
     if chats is not None and not chats:
         return [], []
     allowed = None if chats is None else set(chats)
@@ -845,12 +907,16 @@ def search_with_extra(
     explicit_k = top_k is not None
     top_k = top_k or config.TOP_K
     extra_k = 0 if explicit_k else max(0, extra_k)
-    span = 8 if time_range or speaker else 4
-    prod_pool = top_k * span
+    prod_pool = max(1, config.RETRIEVAL_CANDIDATES)
+    if trace is not None:
+        trace.time_range = time_range
+        trace.speaker = speaker
+        trace.candidate_limit = prod_pool
     # Production fusion stays on prod_pool, so the answer matches a normal ask.
     # A wider pool only fills spoilers once that pool cannot hold them.
     wide_pool = prod_pool
     if extra_k and prod_pool < top_k + extra_k:
+        span = 8 if time_range or speaker else 4
         wide_pool = (top_k + extra_k) * span
 
     vec_ids, vec_scores = _vector_scores(
@@ -858,32 +924,37 @@ def search_with_extra(
     )
     query_cosine = {mid: float(s) for mid, s in zip(vec_ids, vec_scores)}
     if vec_ids:
-        order = np.argsort(-vec_scores)
+        order = np.argsort(-vec_scores, kind="stable")
         vec_full = [vec_ids[i] for i in order[:wide_pool]]
     else:
         vec_full = []
-    kw_full = keyword_search(conn, question, chat_id, wide_pool, time_range)
-    kw_full = _with_rare_stem(
-        conn, question, chat_id, kw_full, wide_pool, time_range, top_k
-    )
+
+    def keywords(limit: int) -> list[int]:
+        ids = keyword_search(conn, question, chat_id, limit, time_range)
+        return _with_rare_stem(
+            conn, question, chat_id, ids, limit, time_range, min(10, prod_pool)
+        )
+
+    kw_prod = keywords(prod_pool)
     pinned = _pinned_hit(conn, pin, allowed, chat_id, query_cosine)
 
     # Vector search carries more weight: most questions are paraphrases of what
     # was actually said. Keyword search earns its place on names, numbers and
     # exact strings like passwords, where embeddings are weak.
-    prod_ranked = _rrf(
+    fused = _rrf(
         [
-            (kw_full[:prod_pool], config.WEIGHT_KEYWORD),
+            (kw_prod, config.WEIGHT_KEYWORD),
             (vec_full[:prod_pool], config.WEIGHT_VECTOR),
         ]
-    )[:prod_pool]
+    )
+    prod_ranked = fused[:prod_pool]
     prod_seed_ids = {mid for mid, _ in prod_ranked}
     ranked = list(prod_ranked)
     if extra_k and wide_pool > prod_pool:
         seen = set(prod_seed_ids)
         for mid, score in _rrf(
             [
-                (kw_full, config.WEIGHT_KEYWORD),
+                (keywords(wide_pool), config.WEIGHT_KEYWORD),
                 (vec_full, config.WEIGHT_VECTOR),
             ]
         )[:wide_pool]:
@@ -897,7 +968,9 @@ def search_with_extra(
             kept = cap_hits(kept)
         else:
             kept = kept[:top_k]
-        production = _with_faq(conn, question, kept, query_vec, time_range, speaker)
+        production = _with_faq(
+            conn, question, kept, query_vec, time_range, speaker, explicit_k, pinned
+        )
         spare = (
             _faq_spare(
                 conn, question, production, query_vec, time_range, speaker, extra_k
@@ -907,12 +980,15 @@ def search_with_extra(
         )
         return production, spare
 
-    placeholders = ",".join("?" * len(ranked))
+    seed_ids = [mid for mid, _ in ranked]
+    if trace is not None:
+        seed_ids = list(dict.fromkeys([*seed_ids, *(mid for mid, _ in fused)]))
+    placeholders = ",".join("?" * len(seed_ids))
     seeds = {
         r["id"]: r
         for r in conn.execute(
             f"SELECT * FROM messages WHERE id IN ({placeholders})",
-            [mid for mid, _ in ranked],
+            seed_ids,
         )
     }
 
@@ -920,8 +996,22 @@ def search_with_extra(
     aliases = people.alias_map(conn)
     handles = people.mention_map(conn)
 
+    traces_by_seed: dict[int, CandidateTrace] = {}
+    if trace is not None:
+        kw_ranks = {mid: rank for rank, mid in enumerate(kw_prod, 1)}
+        vec_ranks = {mid: rank for rank, mid in enumerate(vec_full[:prod_pool], 1)}
+        for rank, (mid, score) in enumerate(fused, 1):
+            seed = seeds.get(mid)
+            if seed is not None:
+                record = CandidateTrace(
+                    seed["chat_id"], seed["msg_id"], kw_ranks.get(mid),
+                    vec_ranks.get(mid), rank, score, query_cosine.get(mid),
+                )
+                traces_by_seed[mid] = record
+                trace.candidates.append(record)
+
     expanded: dict[int, list[sqlite3.Row]] = {}
-    members_by_seed: dict[int, tuple[int, ...]] = {}
+    members_by_seed: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for message_id, _score in ranked:
         seed = seeds.get(message_id)
         if seed is None:
@@ -932,7 +1022,13 @@ def search_with_extra(
             continue
         neighbours = _thread_members(conn, seed, time_range, handles, chat_id)
         expanded[message_id] = neighbours
-        members_by_seed[seed["msg_id"]] = tuple(m["msg_id"] for m in neighbours)
+        members_by_seed[seed["chat_id"], seed["msg_id"]] = [
+            (m["chat_id"], m["msg_id"]) for m in neighbours
+        ]
+        if message_id in traces_by_seed and message_id in prod_seed_ids:
+            record = traces_by_seed[message_id]
+            record.members = tuple(m["msg_id"] for m in neighbours)
+            record.outcome = "speaker filter" if speaker else "overlapping thread"
 
     if speaker:
         ranked = [
@@ -952,49 +1048,67 @@ def search_with_extra(
             ).lower()
         ]
 
-    kept_seeds = thread.dedupe_seeds(
-        [(seeds[mid]["msg_id"], score) for mid, score in ranked if mid in expanded],
+    eligible = [(mid, score) for mid, score in ranked if mid in expanded]
+    for mid, _ in eligible:
+        if mid in traces_by_seed and mid in prod_seed_ids:
+            traces_by_seed[mid].outcome = "overlapping thread"
+    kept_seeds = set(thread.dedupe_seeds(
+        [((seeds[mid]["chat_id"], seeds[mid]["msg_id"]), score) for mid, score in eligible],
         members_by_seed,
-    )
-    kept_msg_ids = set(kept_seeds)
+    ))
 
     prod_hits: list[Hit] = []
     wide_hits: list[Hit] = []
-    for message_id, score in ranked:
-        if message_id not in expanded:
-            continue
+    traces_by_hit: dict[int, CandidateTrace] = {}
+    for message_id, score in eligible:
         seed = seeds[message_id]
-        if seed["msg_id"] not in kept_msg_ids:
+        if (seed["chat_id"], seed["msg_id"]) not in kept_seeds:
             continue
         members = expanded[message_id]
         bucket = prod_hits if message_id in prod_seed_ids else wide_hits
-        bucket.append(
-            _hit_from_thread(
-                conn,
-                seed,
-                members,
-                score,
-                query_cosine.get(message_id, 0.0),
-                names,
-                aliases,
-            )
+        hit = _hit_from_thread(
+            conn, seed, members, score, query_cosine.get(message_id, 0.0), names, aliases
         )
+        bucket.append(hit)
+        if bucket is prod_hits and message_id in traces_by_seed:
+            traces_by_hit[id(hit)] = traces_by_seed[message_id]
 
-    prod_hits = _apply_rerank(question, prod_hits)
-    _apply_recency(prod_hits, now, time_range, question)
+    prod_hits, reranked = _apply_rerank(question, prod_hits, traces_by_hit)
+    _apply_recency(prod_hits, now, time_range, question, reranked)
     _apply_recency(wide_hits, now, time_range, question)
     prod_hits = _place_pin(prod_hits, pinned)
     if pinned is not None:
         pin_ids = set(pinned.msg_ids)
-        wide_hits = [h for h in wide_hits if not pin_ids or not (set(h.msg_ids) & pin_ids)]
+        wide_hits = [
+            h for h in wide_hits
+            if h.chat_id != pinned.chat_id or not (set(h.msg_ids) & pin_ids)
+        ]
 
     kept = prod_hits[:top_k]
     if not explicit_k:
         kept = cap_hits(kept)
-    production = _with_faq(conn, question, kept, query_vec, time_range, speaker)
+    production = _with_faq(
+        conn, question, kept, query_vec, time_range, speaker, explicit_k, pinned
+    )
+    if trace is not None:
+        for record in traces_by_hit.values():
+            record.outcome = "overlaps pinned thread"
+        for rank, hit in enumerate(prod_hits, 1):
+            if id(hit) in traces_by_hit:
+                record = traces_by_hit[id(hit)]
+                if not explicit_k and len(kept) < min(top_k, config.MAX_K) and rank <= top_k:
+                    record.outcome = "cosine cutoff"
+                else:
+                    record.outcome = "excerpt limit"
+        for rank, hit in enumerate(production, 1):
+            if id(hit) in traces_by_hit:
+                record = traces_by_hit[id(hit)]
+                record.final_rank = rank
+                record.outcome = "returned"
     if not extra_k:
         return production, []
-    spare = (prod_hits[len(kept):] + wide_hits)[:extra_k]
+    sent_chat_count = sum(h.kind == "chat" for h in production)
+    spare = (prod_hits[sent_chat_count:] + wide_hits)[:extra_k]
     spare.extend(
         _faq_spare(
             conn,

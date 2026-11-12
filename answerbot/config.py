@@ -54,6 +54,7 @@ SPEAKER_LABEL = os.getenv("SPEAKER_LABEL", "name").strip().lower()
 
 # Retrieval
 TOP_K = int(os.getenv("TOP_K", "10"))
+RETRIEVAL_CANDIDATES = int(os.getenv("RETRIEVAL_CANDIDATES", "100"))
 # RRF_K flattens score differences; 60 is the paper's default and suits large
 # corpora, but result lists here are short, so a smaller value keeps top ranks
 # meaningfully separated.
@@ -86,13 +87,11 @@ def parse_stopword_keep(raw: str | None) -> tuple[str, ...]:
 
 # Never dropped as stopwords despite high DF. Unset = цюрих, швейцария.
 STOPWORD_KEEP = parse_stopword_keep(os.getenv("STOPWORD_KEEP"))
-# Fusion still ranks TOP_K windows; the LLM only sees a prefix of that list.
-# Always keep MIN_K, then stop at the first hit whose cosine is below COSINE_MIN,
-# never more than MAX_K. MIN_K is below MAX_K so the cosine floor can drop the
-# tail. COSINE_MIN=0 disables the cutoff (always send MAX_K).
+# TOP_K limits the ranked chat excerpts. The optional cosine cutoff starts
+# after MIN_K. MAX_K caps the full list, including FAQ.
 MIN_K = int(os.getenv("MIN_K", "4"))
 MAX_K = int(os.getenv("MAX_K", "8"))
-COSINE_MIN = float(os.getenv("COSINE_MIN", "0.7"))
+COSINE_MIN = float(os.getenv("COSINE_MIN", "0"))
 # Fused scores are multiplied by 0.5^(age_days / half_life) using ts_end, and
 # only when the question looks current (сейчас, актуально, сколько стоит, now,
 # how much does it cost). Decision questions (что решили, what did we decide)
@@ -105,7 +104,7 @@ RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "365"))
 RERANK = os.getenv("RERANK", "1").strip().lower() not in ("0", "false", "no", "off", "none")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
 # How many fused threads to score. The rest stay behind them in fusion order.
-RERANK_MAX = int(os.getenv("RERANK_MAX", "32"))
+RERANK_MAX = int(os.getenv("RERANK_MAX", "100"))
 RERANK_BATCH = int(os.getenv("RERANK_BATCH", "8"))
 # Token cap for each thread. The model truncates past this.
 RERANK_MAX_LENGTH = int(os.getenv("RERANK_MAX_LENGTH", "256"))

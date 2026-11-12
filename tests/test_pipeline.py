@@ -261,6 +261,20 @@ class TestThread:
         got = expand_thread(msgs, 2, cosine={1: 0.0, 2: 0.0, 3: 0.0})
         assert {m["msg_id"] for m in got} == {1, 2, 3}
 
+    def test_narrow_cosine_range_keeps_evidence_and_excludes_other_topic(self):
+        msgs = [
+            msg(1, 0, "What does the pass cost?"),
+            msg(2, 99, "The train leaves soon"),
+            msg(3, 100, "About the pass", reply_to=1),
+            msg(4, 101, "The ticket office sells the pass"),
+            msg(5, 200, "35 francs", reply_to=3),
+        ]
+        cosine = {1: 0.73, 2: 0.58, 3: 1.0, 4: 0.71, 5: 0.64}
+        expanded = expand_thread(msgs, 3, cosine=cosine, cosine_min=0.65)
+        assert [m["msg_id"] for m in expanded] == [1, 3, 4, 5]
+        capped = expand_thread(msgs, 3, cosine=cosine, cosine_min=0.65, max_msgs=3)
+        assert [m["msg_id"] for m in capped] == [1, 3, 5]
+
     def test_cap_keeps_the_seed(self):
         msgs = [msg(i, i, "x" * 100, sender_id=1) for i in range(1, 10)]
         cosine = {i: 0.9 for i in range(1, 10)}
@@ -1410,6 +1424,17 @@ class TestSpareSpoilers:
 
 
 class TestRecency:
+    def test_negative_reranker_scores_favor_fresh_hit_at_equal_relevance(self, monkeypatch):
+        monkeypatch.setattr(config, "RECENCY_HALF_LIFE_DAYS", 365)
+        now = datetime(2026, 8, 25, tzinfo=timezone.utc)
+        today = int(now.timestamp())
+        old = Hit(1, 1, 1, 1, today - 365 * 86400, today - 365 * 86400, "A", "old", -5.0)
+        fresh = Hit(2, 1, 2, 2, today, today, "A", "recent", -5.0)
+        hits = [old, fresh]
+        retrieve._apply_recency(hits, now, None, "what is the price now", reranked=2)
+        assert hits == [fresh, old]
+        assert old.score < -5.0
+
     def test_disabled_half_life_is_a_no_op(self):
         assert retrieve.recency_weight(0, 10**9, 0) == 1.0
         assert retrieve.recency_weight(0, 10**9, -5) == 1.0
@@ -1583,6 +1608,37 @@ class TestRareStem:
 
 
 class TestRerank:
+    def test_candidate_below_old_pool_reaches_reranker(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "RERANK", True)
+        monkeypatch.setattr(config, "RETRIEVAL_CANDIDATES", 100)
+        monkeypatch.setattr(config, "RERANK_MAX", 100)
+        seed(conn, _isolated(55))
+        ids = [r[0] for r in conn.execute("SELECT id FROM messages ORDER BY msg_id")]
+        monkeypatch.setattr(retrieve, "keyword_search", lambda _c, _q, _chat, k, _t: ids[:k])
+        monkeypatch.setattr(
+            "answerbot.rerank.score",
+            lambda _q, texts: [10.0 if "number 51" in t else 0.0 for t in texts],
+        )
+        trace = retrieve.SearchTrace()
+        hits = retrieve.search(conn, "pangolin", chat_id=1, trace=trace)
+        assert hits[0].msg_ids == (51,)
+        record = trace.candidates[50]
+        assert (record.msg_id, record.keyword_rank, record.fusion_rank) == (51, 51, 51)
+        assert (record.reranker_score, record.final_rank, record.outcome) == (10.0, 1, "returned")
+        assert trace.candidates[-1].outcome == "excerpt limit"
+
+    def test_threads_and_pin_do_not_hide_same_message_number_in_other_chat(
+        self, conn, monkeypatch
+    ):
+        monkeypatch.setattr(config, "MIN_K", 4)
+        seed(conn, [(7, 1, "pangolin sightings in the morning")], chat_id=1)
+        seed(conn, [(7, 1, "pangolin sightings in the evening")], chat_id=2)
+        for pin in (None, (1, 7)):
+            hits = retrieve.search(conn, "pangolin", chat_id=[1, 2], pin=pin)
+            assert {(h.chat_id, h.msg_ids) for h in hits} == {(1, (7,)), (2, (7,))}
+            if pin:
+                assert hits[0].chat_id == 1
+
     def test_cross_encoder_reorders_the_fused_pool(self, conn, fake_embed, monkeypatch):
         monkeypatch.setattr(config, "RERANK", True)
         gap = config.THREAD_RADIUS_SECONDS + config.THREAD_SAME_SPEAKER_SECONDS + 100
