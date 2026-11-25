@@ -75,7 +75,13 @@ def score(case: Case, result: answer.Answer) -> tuple[str, ...]:
     # both values cannot establish which one the bot chose.
     if set(_CLOCK_TIME.findall(result.text)) != {case.expected_time}:
         failures.append("incorrect fact")
-    if case.supporting_message not in message_ids(result.cited_hits(), case.chat_id):
+    raw_citations = answer.CITATION.findall(result.text)
+    invalid_citation = any(
+        not 1 <= int(tag) <= len(result.hits) for tag in raw_citations
+    )
+    if invalid_citation or case.supporting_message not in message_ids(
+        result.cited_hits(), case.chat_id
+    ):
         failures.append("missing or incorrect citation")
     return tuple(failures)
 

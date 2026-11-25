@@ -57,6 +57,13 @@ def test_scorer_rejects_stale_answer_with_correct_citation(conn):
     )
 
 
+def test_scorer_rejects_invented_citation_alongside_valid_one(conn):
+    case = benchmark.CASES[0]
+    hits = retrieve.search(conn, case.question, chat_id=case.chat_id)
+    result = answer.Answer("09:30 [W1] [W99]", hits)
+    assert benchmark.score(case, result) == ("missing or incorrect citation",)
+
+
 def test_report_distinguishes_wrong_answers_and_model_errors(conn, capsys):
     llm = Mock()
     llm.complete.side_effect = [
