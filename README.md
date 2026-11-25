@@ -402,7 +402,7 @@ A reply that says it couldn't find the answer (the canonical English
 sentence, or a short Russian refusal) is shown **without** the source list
 or the jump link. The retrieved windows, the reply text, and whether
 grounding abstained are stored in `query_log`. `python -m answerbot.eval
---misses` lists questions where `abstain` is set or `cited_ids` is empty.
+--misses` lists questions where `abstain` is set, `cited_ids` is empty, or the asker tapped **Wrong source**. The button appears on cited answers when query logging is enabled.
 Numbers, times, backtick spans, and tokens that mix letters and digits are
 checked against the excerpts with timestamp prefixes ignored. If any of
 those is missing from every excerpt, the reply is replaced with the

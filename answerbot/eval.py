@@ -3,7 +3,7 @@
     python -m answerbot.eval              # against DB_PATH
     python -m answerbot.eval --fixture    # load + index the fixture, then eval
     python -m answerbot.eval --cases data/search-benchmark.json
-    python -m answerbot.eval --misses     # logged questions that abstained or cited nothing
+    python -m answerbot.eval --misses     # logged questions that abstained, cited nothing, or were flagged
 """
 
 from __future__ import annotations
@@ -145,7 +145,7 @@ def format_miss_report(rows, limit_answer: int = 200) -> str:
         if len(answer) > limit_answer:
             answer = answer[: limit_answer - 1] + "…"
         lines.append(
-            f"{row['ts']} abstain={row['abstain']} cited={row['cited_ids']}"
+            f"{row['ts']} abstain={row['abstain']} wrong_source={row['wrong_source']} cited={row['cited_ids']}"
         )
         lines.append(f"  Q: {row['question']}")
         if answer:

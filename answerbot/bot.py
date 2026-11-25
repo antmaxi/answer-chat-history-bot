@@ -745,7 +745,7 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
         llm_t0 = time.monotonic()
         result = await asyncio.to_thread(complete)
         llm_ms = int((time.monotonic() - llm_t0) * 1000) if hits else None
-        await _db(
+        query_id = await _db(
             answer._record,
             conn,
             question,
@@ -773,8 +773,15 @@ async def respond(message: Message, question: str, chat_id: int | list[int]) -> 
                 chat_titles=titles,
                 include_chat=include_chat,
             )
+        keyboard = None
+        if query_id and user_id and result.cited_hits() and not result.abstain:
+            button = InlineKeyboardButton(
+                text=i18n.t(lang, "wrong_source"), callback_data=f"miss:{query_id}"
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[button]])
         await thinking.edit_text(
             body,
+            reply_markup=keyboard,
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
@@ -855,6 +862,17 @@ async def cmd_settings(message: Message, bot: Bot) -> None:
         reply_markup=_settings_keyboard(lang),
         parse_mode="HTML",
     )
+
+
+@dp.callback_query(F.data.regexp(r"^miss:[1-9][0-9]{0,17}$"))
+async def report_wrong_source(query: CallbackQuery, bot: Bot) -> None:
+    if not await _ensure_member_callback(query, bot):
+        return
+    user_id = query.from_user.id
+    query_id = int(query.data.split(":")[1])
+    recorded = await _db(db.report_wrong_source, conn, query_id, user_id)
+    lang = await _lang_for(user_id)
+    await query.answer(i18n.t(lang, "report_saved" if recorded else "report_unavailable"))
 
 
 @dp.callback_query(F.data == "settings:toggle_lang")
