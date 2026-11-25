@@ -1,6 +1,7 @@
 """Measure retrieval using fixture text or annotated Telegram message IDs.
 
     python -m answerbot.eval              # against DB_PATH
+    python -m answerbot.eval --live-answers  # configured answer model on synthetic chat
     python -m answerbot.eval --fixture    # load + index the fixture, then eval
     python -m answerbot.eval --cases data/search-benchmark.json
     python -m answerbot.eval --misses     # logged questions that abstained or cited nothing
@@ -9,6 +10,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from math import ceil
@@ -158,7 +160,7 @@ def main() -> None:
     import sys
 
     logconfig.setup()
-    ap = argparse.ArgumentParser(description="Measure retrieval success@k on the golden set")
+    ap = argparse.ArgumentParser(description="Evaluate chat retrieval and answer behavior")
     ap.add_argument("--fixture", action="store_true", help="index tests/make_fixture.py into a temp DB")
     ap.add_argument("--cases", type=Path, help="JSON file of questions and expected message IDs")
     ap.add_argument("-k", type=int, default=None, help="override the production excerpt cap")
@@ -168,7 +170,22 @@ def main() -> None:
         help="print query_log rows that abstained or cited nothing",
     )
     ap.add_argument("--limit", type=int, default=50)
+    ap.add_argument(
+        "--live-answers", action="store_true",
+        help="run the configured answer model on synthetic chat fixtures",
+    )
     args = ap.parse_args()
+    if args.live_answers:
+        if args.fixture or args.misses or args.cases or args.k is not None:
+            ap.error("--live-answers runs its own fixtures and cannot be combined with retrieval options")
+        from . import answer_benchmark, config
+
+        print(f"Live answer benchmark: {config.LLM_PROVIDER} / {config.ANSWER_MODEL}")
+        with closing(db.connect(":memory:")) as conn:
+            answer_benchmark.seed(conn)
+            status = answer_benchmark.run(conn)
+        sys.exit(status)
+
     try:
         cases = load_cases(args.cases) if args.cases else None
     except (OSError, ValueError) as exc:
