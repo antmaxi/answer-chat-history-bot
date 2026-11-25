@@ -446,6 +446,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "query_log", "user_id", "INTEGER")
     ensure_column(conn, "query_log", "search_ms", "INTEGER")
     ensure_column(conn, "query_log", "llm_ms", "INTEGER")
+    ensure_column(conn, "query_log", "wrong_source", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "query_log", "answer", "TEXT")
     ensure_column(conn, "query_log", "abstain", "INTEGER NOT NULL DEFAULT 0")
     if meta_get(conn, "fts_stem") != FTS_STEM_VERSION:
@@ -631,11 +632,11 @@ def log_query(
     llm_ms: int | None = None,
     answer: str | None = None,
     abstain: bool = False,
-) -> None:
+) -> int | None:
     """Append one answered question. No-op when QUERY_LOG is off."""
     if not config.QUERY_LOG:
         return
-    conn.execute(
+    cursor = conn.execute(
         """INSERT INTO query_log
            (ts, question, chat_ids, window_ids, cited_ids, latency_ms,
             search_ms, llm_ms, model, user_id, answer, abstain)
@@ -656,6 +657,18 @@ def log_query(
         ),
     )
     conn.commit()
+    return cursor.lastrowid
+
+
+def report_wrong_source(conn: sqlite3.Connection, query_id: int, user_id: int) -> bool:
+    if not config.QUERY_LOG:
+        return False
+    with conn:
+        cursor = conn.execute(
+            "UPDATE query_log SET wrong_source = 1 WHERE id = ? AND user_id = ?",
+            (query_id, user_id),
+        )
+    return cursor.rowcount == 1
 
 
 def retrieval_misses(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
@@ -668,9 +681,9 @@ def retrieval_misses(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.
     return list(
         conn.execute(
             """
-            SELECT ts, question, answer, abstain, cited_ids, window_ids
+            SELECT ts, question, answer, abstain, wrong_source, cited_ids, window_ids
             FROM query_log
-            WHERE abstain = 1
+            WHERE wrong_source = 1 OR abstain = 1
                OR cited_ids IS NULL
                OR cited_ids = ''
                OR cited_ids = '[]'

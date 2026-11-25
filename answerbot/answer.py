@@ -501,8 +501,8 @@ def _record(
     user_id: int | None = None,
     search_ms: int | None = None,
     llm_ms: int | None = None,
-) -> None:
-    db.log_query(
+) -> int | None:
+    return db.log_query(
         conn,
         question=question,
         chat_ids=retrieve.normalize_chat_ids(chat_id),

@@ -242,6 +242,20 @@ class TestQueryLog:
         assert "found" not in report
         assert "abstain=1" in report
 
+    def test_wrong_source_report_belongs_to_asker(self, conn, monkeypatch):
+        monkeypatch.setattr(config, "QUERY_LOG", True)
+        query_id = db.log_query(
+            conn, question="where?", user_id=12, chat_ids=[1], latency_ms=1,
+            model="fake", window_ids=[3], cited_ids=[3],
+        )
+        assert not db.report_wrong_source(conn, query_id, 13)
+        assert not db.retrieval_misses(conn)
+        assert db.report_wrong_source(conn, query_id, 12)
+        assert db.report_wrong_source(conn, query_id, 12)
+        row, = db.retrieval_misses(conn)
+        assert row["question"] == "where?"
+        assert "wrong_source=1 cited=[3]" in ev.format_miss_report([row])
+
     def test_migrate_adds_answer_and_abstain(self, conn):
         conn.execute("DROP TABLE query_log")
         conn.execute(
