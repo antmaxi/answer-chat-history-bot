@@ -507,6 +507,33 @@ check (keyword success@k on the synthetic fixture). For real embeddings:
 python -m answerbot.eval --fixture
 ```
 
+### Answer behavior benchmark
+
+The pytest suite also checks when the bot should answer, abstain, or cite a
+later correction. These tests use synthetic chats and fixed model responses,
+so they run without model credentials.
+
+To measure how the configured answer model handles the same cases:
+
+```bash
+python -m answerbot.eval --live-answers
+```
+
+The live run uses an in-memory keyword index of synthetic chat messages and
+the bot's answer and grounding code. It needs the configured model provider
+and may incur usage costs. It reports the expected answer or abstention, the
+actual reply, and the cited fixture message IDs for each case. Time questions
+expect a single distinct HH:MM value. A missed answer,
+unsupported answer, incorrect fact, or missing or wrong citation fails a case.
+Exit status is 0 when all cases pass, 1 for case failures, and 2 for execution
+errors such as a provider failure.
+
+The first live run on 25 November 2026 used Groq's `openai/gpt-oss-20b`.
+Four of five cases passed. The Russian answer gave the right time but omitted
+its citation. Both abstention cases and the later correction passed.
+
+### Retrieval benchmark with your own chat
+
 To evaluate questions from your own chat, review the expected messages and
 store the cases as a JSON list in `data/search-benchmark.json`. Each case has
 a `question` and an `evidence` list of `[chat_id, msg_id]` pairs. Optional
